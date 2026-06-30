@@ -26,6 +26,20 @@ local CIRCLE_TEXTURE = "Interface\\AddOns\\MythicDungeonTools\\Textures\\Circle_
 local SQUARE_TEXTURE = "Interface\\AddOns\\MythicDungeonTools\\Textures\\Square_White"
 local POI_FALLBACK_TEXTURE = "Interface\\MINIMAP\\POIIcons"
 
+local FALLBACK_FONT_CHOICES = {
+  { text = FONT_DEFAULT_NAME, value = FONT_DEFAULT_NAME },
+  { text = "Blizzard Friz Quadrata", value = "Fonts\\FRIZQT__.TTF" },
+  { text = "Blizzard Arial Narrow", value = "Fonts\\ARIALN.TTF" },
+  { text = "Blizzard Morpheus", value = "Fonts\\MORPHEUS.TTF" },
+  { text = "Blizzard Skurri", value = "Fonts\\SKURRI.TTF" },
+  { text = "ElvUI Expressway", value = "Interface\\AddOns\\ElvUI\\Game\\Shared\\Media\\Fonts\\Expressway.ttf" },
+  { text = "ElvUI PTSans Narrow", value = "Interface\\AddOns\\ElvUI\\Game\\Shared\\Media\\Fonts\\PTSansNarrow.ttf" },
+  { text = "ElvUI Continuum", value = "Interface\\AddOns\\ElvUI\\Game\\Shared\\Media\\Fonts\\ContinuumMedium.ttf" },
+  { text = "ElvUI Action Man", value = "Interface\\AddOns\\ElvUI\\Game\\Shared\\Media\\Fonts\\ActionMan.ttf" },
+  { text = "ElvUI Die Die Die", value = "Interface\\AddOns\\ElvUI\\Game\\Shared\\Media\\Fonts\\DieDieDie.ttf" },
+  { text = "ElvUI Homespun", value = "Interface\\AddOns\\ElvUI\\Game\\Shared\\Media\\Fonts\\Homespun.ttf" },
+}
+
 local DEFAULTS = {
   shown = true,
   locked = false,
@@ -187,27 +201,40 @@ local function ResolveFontPath(fontName)
   return STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF"
 end
 
+local function AddFontChoice(choices, seen, text, value)
+  value = tostring(value or FONT_DEFAULT_NAME)
+  if value == "" then value = FONT_DEFAULT_NAME end
+  text = tostring(text or value)
+  if not seen[value] then
+    choices[#choices + 1] = { text = text, value = value }
+    seen[value] = true
+  end
+end
+
 local function GetFontChoices()
-  local choices = { FONT_DEFAULT_NAME }
-  local seen = { [FONT_DEFAULT_NAME] = true }
+  local choices = {}
+  local seen = {}
   local LSM = GetLibSharedMedia()
+
+  for _, choice in ipairs(FALLBACK_FONT_CHOICES) do
+    AddFontChoice(choices, seen, choice.text, choice.value)
+  end
 
   if LSM and type(LSM.List) == "function" then
     local ok, fonts = pcall(LSM.List, LSM, "font")
     if ok and type(fonts) == "table" then
       for _, name in ipairs(fonts) do
-        if type(name) == "string" and not seen[name] then
-          choices[#choices + 1] = name
-          seen[name] = true
+        if type(name) == "string" then
+          AddFontChoice(choices, seen, name, name)
         end
       end
     end
   end
 
   table.sort(choices, function(a, b)
-    if a == FONT_DEFAULT_NAME then return true end
-    if b == FONT_DEFAULT_NAME then return false end
-    return a < b
+    if a.value == FONT_DEFAULT_NAME then return true end
+    if b.value == FONT_DEFAULT_NAME then return false end
+    return a.text < b.text
   end)
 
   return choices
@@ -218,6 +245,17 @@ local function NormalizeFontName(fontName)
     return FONT_DEFAULT_NAME
   end
   return fontName
+end
+
+local function FontLabel(fontName)
+  fontName = NormalizeFontName(fontName)
+  for _, choice in ipairs(GetFontChoices()) do
+    if choice.value == fontName then return choice.text end
+  end
+
+  local label = fontName:match("[^\\]+$") or fontName
+  label = label:gsub("%.ttf$", ""):gsub("%.TTF$", "")
+  return label
 end
 
 local function NormalizeOutline(outline)
@@ -248,7 +286,11 @@ local function ApplyTextStyle(fontString, prefix, fallbackSize, scale, sizeOffse
   local size = Clamp((db[prefix.."FontSize"] or fallbackSize) + (sizeOffset or 0), FONT_SIZE_MIN, FONT_SIZE_MAX) * scale
   local outline = NormalizeOutline(db[prefix.."FontOutline"] or DEFAULTS[prefix.."FontOutline"])
 
-  fontString:SetFont(ResolveFontPath(fontName), math.max(FONT_SIZE_MIN, math.floor(size + 0.5)), OutlineFlag(outline))
+  local fontSize = math.max(FONT_SIZE_MIN, math.floor(size + 0.5))
+  local fontFlags = OutlineFlag(outline)
+  if not fontString:SetFont(ResolveFontPath(fontName), fontSize, fontFlags) then
+    fontString:SetFont(STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF", fontSize, fontFlags)
+  end
   if db[prefix.."FontShadow"] then
     fontString:SetShadowColor(0, 0, 0, 0.85)
     fontString:SetShadowOffset(1, -1)
@@ -1751,10 +1793,10 @@ UpdateFontSettingControls = function()
   local fontButtons = settingsControls.fontButtons
   if fontButtons then
     if fontButtons.sidebar then
-      fontButtons.sidebar:SetText("Font: "..ShortText(NormalizeFontName(db.sidebarFont), 16))
+      fontButtons.sidebar:SetText("Font: "..ShortText(FontLabel(db.sidebarFont), 16))
     end
     if fontButtons.map then
-      fontButtons.map:SetText("Font: "..ShortText(NormalizeFontName(db.mapFont), 16))
+      fontButtons.map:SetText("Font: "..ShortText(FontLabel(db.mapFont), 16))
     end
   end
 
@@ -1812,14 +1854,17 @@ local function ShowFontPicker(anchor, prefix)
   end)
 end
 
-local function ShowOutlinePicker(anchor, prefix)
-  ShowPickerMenu(anchor, {
-    { text = "None", value = "NONE" },
-    { text = "Thin", value = "OUTLINE" },
-    { text = "Thick", value = "THICKOUTLINE" },
-  }, NormalizeOutline(db[prefix.."FontOutline"]), function(value)
-    SetFontSetting(prefix, "FontOutline", NormalizeOutline(value))
-  end)
+local function CycleOutline(prefix)
+  local current = NormalizeOutline(db[prefix.."FontOutline"])
+  local nextOutline = "OUTLINE"
+
+  if current == "OUTLINE" then
+    nextOutline = "THICKOUTLINE"
+  elseif current == "THICKOUTLINE" then
+    nextOutline = "NONE"
+  end
+
+  SetFontSetting(prefix, "FontOutline", nextOutline)
 end
 
 local function MakeFontControls(parent, title, prefix, x, y)
@@ -1834,8 +1879,8 @@ local function MakeFontControls(parent, title, prefix, x, y)
   settingsControls.fontButtons[prefix] = MakeNativeButton(parent, "", x, y - 22, 150, function(button)
     ShowFontPicker(button, prefix)
   end)
-  settingsControls.outlineButtons[prefix] = MakeNativeButton(parent, "", x + 156, y - 22, 106, function(button)
-    ShowOutlinePicker(button, prefix)
+  settingsControls.outlineButtons[prefix] = MakeNativeButton(parent, "", x + 156, y - 22, 106, function()
+    CycleOutline(prefix)
   end)
   MakeNativeCheck(parent, "Shadow", prefix.."FontShadow", x + 266, y - 23)
 
@@ -2021,10 +2066,6 @@ local function CreateSettingsWindow()
     ResetPosition()
     RequestRefresh()
     RefreshIfNeeded(true)
-    RefreshSettingsWindow()
-  end)
-  MakeNativeButton(settingsFrame, "Hide Overlay", 144, -956, 120, function()
-    SetBooleanOption("shown", false, true)
     RefreshSettingsWindow()
   end)
 end
