@@ -11,12 +11,21 @@ local REFRESH_INTERVAL = 0.35
 
 local CIRCLE_TEXTURE = "Interface\\AddOns\\MythicDungeonTools\\Textures\\Circle_White"
 local SQUARE_TEXTURE = "Interface\\AddOns\\MythicDungeonTools\\Textures\\Square_White"
+local MDT_ICON_TEXTURE = "Interface\\AddOns\\MythicDungeonTools\\Textures\\MDTMinimap"
+local POI_FALLBACK_TEXTURE = "Interface\\MINIMAP\\POIIcons"
 
 local DEFAULTS = {
   shown = true,
   locked = false,
   showAllPulls = true,
+  showEnemies = true,
+  showUnpulledEnemies = true,
   showEnemyDots = false,
+  showEnemyPortraits = true,
+  showPOIs = true,
+  showPullOutlines = true,
+  showPullNumbers = true,
+  showRouteLines = false,
   alpha = 0.95,
   width = 348,
   point = "BOTTOMLEFT",
@@ -48,12 +57,15 @@ local statusText
 local smallTiles = {}
 local largeTiles = {}
 local hooksInstalled
+local mdtSectionRegistered
+local initialized
 local dirty = true
 local lastSignature
 local elapsedSinceRefresh = 0
 
-local linePool, markerPool, dotPool = {}, {}, {}
-local usedLines, usedMarkers, usedDots = 0, 0, 0
+local linePool, markerPool, dotPool, enemyPool, poiPool = {}, {}, {}, {}, {}
+local usedLines, usedMarkers, usedDots, usedEnemies, usedPOIs = 0, 0, 0, 0, 0
+local ResetPosition, ToggleShown, SetLocked
 
 local function Print(msg)
   DEFAULT_CHAT_FRAME:AddMessage("|cff66ccffMDT Mini Route:|r "..msg)
@@ -116,22 +128,10 @@ local function GetCurrentPreset()
 end
 
 local function GetCurrentPull(preset)
-  local MDT = GetMDT()
-  if MDT and type(MDT.GetCurrentPull) == "function" then
-    local ok, currentPull = pcall(MDT.GetCurrentPull, MDT)
-    if ok and currentPull then return currentPull end
-  end
-
   return preset and preset.value and preset.value.currentPull
 end
 
 local function GetSelection(preset)
-  local MDT = GetMDT()
-  if MDT and type(MDT.GetSelection) == "function" then
-    local ok, selection = pcall(MDT.GetSelection, MDT)
-    if ok and type(selection) == "table" then return selection end
-  end
-
   if preset and preset.value then
     if type(preset.value.selection) == "table" and #preset.value.selection > 0 then
       return preset.value.selection
@@ -174,6 +174,8 @@ local function ResetDrawnRoute()
   usedLines = 0
   usedMarkers = 0
   usedDots = 0
+  usedEnemies = 0
+  usedPOIs = 0
 
   for i = 1, #linePool do
     linePool[i]:Hide()
@@ -183,6 +185,12 @@ local function ResetDrawnRoute()
   end
   for i = 1, #dotPool do
     dotPool[i]:Hide()
+  end
+  for i = 1, #enemyPool do
+    enemyPool[i]:Hide()
+  end
+  for i = 1, #poiPool do
+    poiPool[i]:Hide()
   end
 end
 
@@ -234,6 +242,43 @@ local function AcquireMarker()
   return marker
 end
 
+local function AcquireEnemyIcon()
+  usedEnemies = usedEnemies + 1
+  local enemyIcon = enemyPool[usedEnemies]
+  if not enemyIcon then
+    enemyIcon = CreateFrame("Frame", nil, canvas)
+    enemyIcon:SetFrameLevel(canvas:GetFrameLevel() + 5)
+    enemyIcon.bg = enemyIcon:CreateTexture(nil, "ARTWORK", nil, 1)
+    enemyIcon.bg:SetTexture(CIRCLE_TEXTURE)
+    enemyIcon.bg:SetAllPoints()
+    enemyIcon.icon = enemyIcon:CreateTexture(nil, "ARTWORK", nil, 2)
+    enemyIcon.icon:SetPoint("TOPLEFT", enemyIcon, "TOPLEFT", 2, -2)
+    enemyIcon.icon:SetPoint("BOTTOMRIGHT", enemyIcon, "BOTTOMRIGHT", -2, 2)
+    enemyIcon.count = enemyIcon:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    enemyIcon.count:SetPoint("CENTER", enemyIcon, "CENTER", 0, 0)
+    enemyIcon.count:SetFont(enemyIcon.count:GetFont(), 8, "OUTLINE")
+    enemyPool[usedEnemies] = enemyIcon
+  end
+  enemyIcon:ClearAllPoints()
+  enemyIcon:SetAlpha(1)
+  enemyIcon.icon:SetTexCoord(0, 1, 0, 1)
+  enemyIcon:Show()
+  return enemyIcon
+end
+
+local function AcquirePOIIcon()
+  usedPOIs = usedPOIs + 1
+  local poiIcon = poiPool[usedPOIs]
+  if not poiIcon then
+    poiIcon = canvas:CreateTexture(nil, "OVERLAY", nil, 3)
+    poiPool[usedPOIs] = poiIcon
+  end
+  poiIcon:ClearAllPoints()
+  poiIcon:SetTexCoord(0, 1, 0, 1)
+  poiIcon:Show()
+  return poiIcon
+end
+
 local function DrawLine(x1, y1, x2, y2, scale, r, g, b, a, thickness)
   local sx, sy = x1 * scale, y1 * scale
   local ex, ey = x2 * scale, y2 * scale
@@ -267,6 +312,151 @@ local function DrawMarker(x, y, scale, pullIdx, r, g, b, active, selected)
   marker.icon:SetVertexColor(r, g, b, 0.92)
   marker.text:SetText(pullIdx)
   marker.text:SetTextColor(1, 1, 1, 1)
+end
+
+local function DrawEnemyIcon(enemy, clone, scale, pullInfo, selected)
+  local enemyIcon = AcquireEnemyIcon()
+  local baseScale = (clone.scale or 1) * (enemy.scale or 1) * (enemy.isBoss and 1.45 or 1)
+  local size = math.max(7, math.min(18, 10 * baseScale * scale * 2.15))
+  local r, g, b = 0.86, 0.86, 0.86
+  local alpha = 0.78
+
+  if pullInfo then
+    r, g, b = pullInfo.r, pullInfo.g, pullInfo.b
+    alpha = selected and 1 or 0.88
+  elseif not db.showUnpulledEnemies then
+    enemyIcon:Hide()
+    return
+  end
+
+  enemyIcon:SetSize(size, size)
+  enemyIcon:SetPoint("CENTER", canvas, "TOPLEFT", clone.x * scale, clone.y * scale)
+  enemyIcon:SetAlpha(alpha)
+  enemyIcon.bg:SetVertexColor(r, g, b, pullInfo and 0.95 or 0.55)
+
+  if db.showEnemyPortraits and enemy.displayId then
+    SetPortraitTextureFromCreatureDisplayID(enemyIcon.icon, enemy.displayId)
+    enemyIcon.icon:SetVertexColor(1, 1, 1, pullInfo and 0.95 or 0.72)
+  else
+    enemyIcon.icon:SetTexture(CIRCLE_TEXTURE)
+    enemyIcon.icon:SetVertexColor(r, g, b, pullInfo and 0.9 or 0.55)
+  end
+
+  if enemy.count and enemy.count > 0 and size >= 11 then
+    enemyIcon.count:SetText(enemy.count)
+    enemyIcon.count:SetTextColor(1, 1, 1, 0.9)
+    enemyIcon.count:Show()
+  else
+    enemyIcon.count:Hide()
+  end
+end
+
+local function DrawPOI(poi, scale)
+  if not poi or not poi.x or not poi.y then return end
+  local icon = AcquirePOIIcon()
+  local size = poi.size or (poi.info and poi.info.size) or 16
+  local texture = poi.texture or (poi.info and poi.info.texture)
+
+  icon:SetSize(math.max(8, size * scale * 1.45), math.max(8, size * scale * 1.45))
+  icon:SetPoint("CENTER", canvas, "TOPLEFT", poi.x * scale, poi.y * scale)
+
+  if texture then
+    icon:SetTexture(texture)
+    icon:SetVertexColor(1, 1, 1, 0.9)
+  else
+    icon:SetTexture(POI_FALLBACK_TEXTURE)
+    icon:SetTexCoord(0, 0.25, 0, 0.25)
+    icon:SetVertexColor(0.35, 0.72, 1, 0.8)
+  end
+end
+
+local function IsLowerLeft(a, b)
+  if a[1] < b[1] then return true end
+  if a[1] > b[1] then return false end
+  return a[2] < b[2]
+end
+
+local function IsLeftOf(a, b, c)
+  local u1 = b[1] - a[1]
+  local v1 = b[2] - a[2]
+  local u2 = c[1] - a[1]
+  local v2 = c[2] - a[2]
+  return u1 * v2 - v1 * u2 < 0
+end
+
+local function ConvexHull(points)
+  if not points or #points == 0 then return end
+  if #points <= 2 then return points end
+
+  local lowerLeft = 1
+  for i = 2, #points do
+    if IsLowerLeft(points[i], points[lowerLeft]) then lowerLeft = i end
+  end
+
+  local hull = {}
+  local final = 1
+  local tries = 0
+  repeat
+    table.insert(hull, lowerLeft)
+    final = 1
+    for i = 2, #points do
+      if lowerLeft == final or IsLeftOf(points[lowerLeft], points[final], points[i]) then
+        final = i
+      end
+    end
+    lowerLeft = final
+    tries = tries + 1
+  until final == hull[1] or tries > 100
+
+  local result = {}
+  for _, index in ipairs(hull) do
+    table.insert(result, points[index])
+  end
+  return result
+end
+
+local function ExpandPolygon(points, pointCount)
+  local expanded = {}
+  local index = 1
+  for _, point in ipairs(points or {}) do
+    local radius = (point[3] or 1) * 8
+    local adjustedPointCount = math.max(6, math.floor(pointCount * (point[3] or 1)))
+    for i = 1, adjustedPointCount do
+      local angle = 2 * math.pi / adjustedPointCount * i
+      expanded[index] = {
+        point[1] + radius * math.cos(angle),
+        point[2] + radius * math.sin(angle),
+        radius,
+      }
+      index = index + 1
+    end
+  end
+  return expanded
+end
+
+local function DrawPullOutline(vertices, r, g, b, scale, active)
+  if not db.showPullOutlines then return end
+  if not vertices or #vertices == 0 then return end
+  local hull = ConvexHull(vertices)
+  if not hull then return end
+  if #hull > 2 then
+    hull = ConvexHull(ExpandPolygon(hull, 16))
+  end
+  if not hull then return end
+
+  local alpha = active and 0.95 or 0.56
+  local thickness = math.max(2, scale * 5)
+
+  if #hull == 1 then
+    DrawDot(hull[1][1], hull[1][2], scale, r, g, b, alpha, math.max(12, scale * 28))
+    return
+  end
+
+  for i = 1, #hull do
+    local a = hull[i]
+    local bPoint = hull[i == #hull and 1 or i + 1]
+    DrawLine(a[1], a[2], bPoint[1], bPoint[2], scale, r, g, b, alpha, thickness)
+  end
 end
 
 local function LayoutTiles()
@@ -427,20 +617,21 @@ local function ShouldDrawPull(pullIdx, selectedSet)
   return selectedSet[pullIdx] == true
 end
 
-local function BuildRouteCenters(mdtDB, preset, selectedSet, scale)
+local function BuildPullVisualData(mdtDB, preset, selectedSet, scale)
   local MDT = GetMDT()
-  local centers = {}
-  if not MDT or not mdtDB or not preset or not preset.value then return centers end
+  local centers, pullVertices, clonePullMap = {}, {}, {}
+  if not MDT or not mdtDB or not preset or not preset.value then return centers, pullVertices, clonePullMap end
 
   local pulls = preset.value.pulls
   local enemies = MDT.dungeonEnemies and MDT.dungeonEnemies[mdtDB.currentDungeonIdx]
   local sublevel = preset.value.currentSublevel or 1
-  if type(pulls) ~= "table" or type(enemies) ~= "table" then return centers end
+  if type(pulls) ~= "table" or type(enemies) ~= "table" then return centers, pullVertices, clonePullMap end
 
   for pullIdx, pull in ipairs(pulls) do
-    if type(pull) == "table" and ShouldDrawPull(pullIdx, selectedSet) then
+    if type(pull) == "table" then
       local sumX, sumY, count = 0, 0, 0
       local r, g, b = GetPullColor(pulls, pullIdx)
+      pullVertices[pullIdx] = {}
 
       for enemyIdx, clones in pairs(pull) do
         local numericEnemyIdx = tonumber(enemyIdx)
@@ -452,15 +643,19 @@ local function BuildRouteCenters(mdtDB, preset, selectedSet, scale)
               sumX = sumX + clone.x
               sumY = sumY + clone.y
               count = count + 1
-              if db.showEnemyDots then
-                DrawDot(clone.x, clone.y, scale, r, g, b, selectedSet[pullIdx] and 0.72 or 0.36, selectedSet[pullIdx] and 5 or 3)
-              end
+              table.insert(pullVertices[pullIdx], { clone.x, clone.y, (clone.scale or 1) * (enemy.scale or 1) })
+              clonePullMap[numericEnemyIdx..":"..cloneIdx] = {
+                pullIdx = pullIdx,
+                r = r,
+                g = g,
+                b = b,
+              }
             end
           end
         end
       end
 
-      if count > 0 then
+      if count > 0 and ShouldDrawPull(pullIdx, selectedSet) then
         centers[pullIdx] = {
           x = sumX / count,
           y = sumY / count,
@@ -472,7 +667,47 @@ local function BuildRouteCenters(mdtDB, preset, selectedSet, scale)
     end
   end
 
-  return centers
+  return centers, pullVertices, clonePullMap
+end
+
+local function DrawEnemies(mdtDB, preset, selectedSet, scale, clonePullMap)
+  if not db.showEnemies and not db.showEnemyDots then return end
+  local MDT = GetMDT()
+  local enemies = MDT and MDT.dungeonEnemies and MDT.dungeonEnemies[mdtDB.currentDungeonIdx]
+  local sublevel = preset.value.currentSublevel or 1
+  if type(enemies) ~= "table" then return end
+
+  for enemyIdx, enemy in pairs(enemies) do
+    if type(enemy) == "table" and type(enemy.clones) == "table" then
+      for cloneIdx, clone in pairs(enemy.clones) do
+        if clone and (clone.sublevel == sublevel or clone.sublevel == nil) and clone.x and clone.y then
+          local pullInfo = clonePullMap[enemyIdx..":"..cloneIdx]
+          local selected = pullInfo and selectedSet[pullInfo.pullIdx] == true
+          if pullInfo or db.showUnpulledEnemies then
+            if db.showEnemies then
+              DrawEnemyIcon(enemy, clone, scale, pullInfo, selected)
+            elseif db.showEnemyDots then
+              local r, g, b = 0.75, 0.75, 0.75
+              if pullInfo then r, g, b = pullInfo.r, pullInfo.g, pullInfo.b end
+              DrawDot(clone.x, clone.y, scale, r, g, b, pullInfo and 0.72 or 0.34, pullInfo and 5 or 3)
+            end
+          end
+        end
+      end
+    end
+  end
+end
+
+local function DrawPOIs(mdtDB, preset, scale)
+  if not db.showPOIs then return end
+  local MDT = GetMDT()
+  local pois = MDT and MDT.mapPOIs and MDT.mapPOIs[mdtDB.currentDungeonIdx]
+  local sublevel = preset.value.currentSublevel or 1
+  if type(pois) ~= "table" or type(pois[sublevel]) ~= "table" then return end
+
+  for _, poi in pairs(pois[sublevel]) do
+    DrawPOI(poi, scale)
+  end
 end
 
 local function DrawRoute(mdtDB, preset)
@@ -487,13 +722,25 @@ local function DrawRoute(mdtDB, preset)
   local currentPull = GetCurrentPull(preset)
   local selection = GetSelection(preset)
   local selectedSet = SelectionSet(selection)
-  local centers = BuildRouteCenters(mdtDB, preset, selectedSet, scale)
+  local centers, pullVertices, clonePullMap = BuildPullVisualData(mdtDB, preset, selectedSet, scale)
   local previousCenter
+
+  DrawPOIs(mdtDB, preset, scale)
+
+  for pullIdx = 1, #preset.value.pulls do
+    local vertices = pullVertices[pullIdx]
+    local center = centers[pullIdx]
+    if vertices and center and ShouldDrawPull(pullIdx, selectedSet) then
+      DrawPullOutline(vertices, center.r, center.g, center.b, scale, pullIdx == currentPull or selectedSet[pullIdx])
+    end
+  end
+
+  DrawEnemies(mdtDB, preset, selectedSet, scale, clonePullMap)
 
   for pullIdx = 1, #preset.value.pulls do
     local center = centers[pullIdx]
     if center then
-      if previousCenter and db.showAllPulls then
+      if previousCenter and db.showAllPulls and db.showRouteLines then
         DrawLine(previousCenter.x, previousCenter.y, center.x, center.y, scale, 1, 0.88, 0.25, 0.66, math.max(2, scale * 5))
       end
       previousCenter = center
@@ -502,7 +749,7 @@ local function DrawRoute(mdtDB, preset)
 
   for pullIdx = 1, #preset.value.pulls do
     local center = centers[pullIdx]
-    if center then
+    if center and db.showPullNumbers then
       DrawMarker(center.x, center.y, scale, pullIdx, center.r, center.g, center.b, pullIdx == currentPull, selectedSet[pullIdx])
     end
   end
@@ -510,6 +757,8 @@ local function DrawRoute(mdtDB, preset)
   HidePool(linePool, usedLines)
   HidePool(markerPool, usedMarkers)
   HidePool(dotPool, usedDots)
+  HidePool(enemyPool, usedEnemies)
+  HidePool(poiPool, usedPOIs)
 end
 
 local function GetDungeonName(mdtDB)
@@ -572,7 +821,14 @@ local function BuildSignature()
     tostring(#(preset.value.pulls or {})),
     table.concat(selected, ","),
     tostring(db.showAllPulls),
+    tostring(db.showEnemies),
+    tostring(db.showUnpulledEnemies),
     tostring(db.showEnemyDots),
+    tostring(db.showEnemyPortraits),
+    tostring(db.showPOIs),
+    tostring(db.showPullOutlines),
+    tostring(db.showPullNumbers),
+    tostring(db.showRouteLines),
     tostring(db.width),
   }, ":")
 end
@@ -622,7 +878,196 @@ local function HookMDT()
   hooksInstalled = true
 end
 
-local function ResetPosition()
+local function RefreshSettingsPage()
+  local MDT = GetMDT()
+  if MDT and MDT.main_frame and MDT.main_frame.miniRouteSettingsFrame then
+    MDT.main_frame.miniRouteSettingsFrame:ReleaseChildren()
+    MDT.main_frame.miniRouteSettingsFrame = nil
+  end
+  if MDT and MDT.main_frame and MDT.main_frame.miniRouteSidePanel then
+    MDT.main_frame.miniRouteSidePanel:ReleaseChildren()
+    MDT.main_frame.miniRouteSidePanel = nil
+  end
+  if MDT and MDT.main_frame and type(MDT.GetCurrentSection) == "function" and MDT:GetCurrentSection() == "miniRoute" then
+    if MDT.UpdateSectionVisibility then MDT:UpdateSectionVisibility() end
+  end
+end
+
+local function AddCheckbox(parent, label, key, callback)
+  local AceGUI = LibStub and LibStub("AceGUI-3.0", true)
+  if not AceGUI then return end
+
+  local checkbox = AceGUI:Create("CheckBox")
+  checkbox:SetLabel(label)
+  checkbox:SetWidth(parent.settingWidth or 320)
+  checkbox:SetValue(db[key] == true)
+  checkbox:SetCallback("OnValueChanged", function(_, _, value)
+    db[key] = value == true
+    if callback then callback(db[key]) end
+    RequestRefresh()
+    RefreshIfNeeded(true)
+  end)
+  parent:AddChild(checkbox)
+  return checkbox
+end
+
+local function AddButton(parent, text, callback)
+  local AceGUI = LibStub and LibStub("AceGUI-3.0", true)
+  if not AceGUI then return end
+
+  local button = AceGUI:Create("Button")
+  button:SetText(text)
+  button:SetWidth(parent.settingWidth or 220)
+  button:SetCallback("OnClick", callback)
+  parent:AddChild(button)
+  return button
+end
+
+local function AddSlider(parent, label, minValue, maxValue, step, value, callback)
+  local AceGUI = LibStub and LibStub("AceGUI-3.0", true)
+  if not AceGUI then return end
+
+  local slider = AceGUI:Create("Slider")
+  slider:SetLabel(label)
+  slider:SetWidth(parent.settingWidth or 320)
+  slider:SetSliderValues(minValue, maxValue, step)
+  slider:SetValue(value)
+  slider:SetCallback("OnMouseUp", function(_, _, newValue)
+    callback(newValue)
+    RequestRefresh()
+    RefreshIfNeeded(true)
+  end)
+  parent:AddChild(slider)
+  return slider
+end
+
+local function BuildMDTSettingsPage()
+  local MDT = GetMDT()
+  local AceGUI = LibStub and LibStub("AceGUI-3.0", true)
+  if not MDT or not AceGUI or not MDT.main_frame then return end
+
+  local contentParent = MDT.main_frame.sectionContentFrames and MDT.main_frame.sectionContentFrames.miniRoute
+  if contentParent and not MDT.main_frame.miniRouteSettingsFrame then
+    local group = AceGUI:Create("SimpleGroup")
+    group.frame:SetParent(contentParent)
+    group.frame:SetFrameStrata("HIGH")
+    group.frame:SetFrameLevel(contentParent:GetFrameLevel() + 2)
+    group:SetWidth(690)
+    group:SetHeight(470)
+    group:SetAutoAdjustHeight(false)
+    group:SetLayout("Flow")
+    group.settingWidth = 315
+    group.frame:ClearAllPoints()
+    group.frame:SetPoint("TOP", contentParent, "TOP", 0, -45)
+    group.frame:Show()
+    MDT.main_frame.miniRouteSettingsFrame = group
+
+    local heading = AceGUI:Create("Heading")
+    heading:SetText("Mini Route")
+    heading:SetFullWidth(true)
+    group:AddChild(heading)
+
+    local label = AceGUI:Create("Label")
+    label:SetText("Mini Route is loaded as a separate MDT plugin. These options change only the overlay and do not edit MythicDungeonTools files.")
+    label:SetFullWidth(true)
+    group:AddChild(label)
+
+    AddCheckbox(group, "Show mini route overlay", "shown", function(value)
+      if frame then
+        if value then frame:Show() else frame:Hide() end
+      end
+    end)
+    AddCheckbox(group, "Lock overlay position", "locked", function(value)
+      if frame then frame:SetMovable(not value) end
+    end)
+    AddCheckbox(group, "Show all pulls", "showAllPulls")
+    AddCheckbox(group, "Show pull numbers", "showPullNumbers")
+    AddCheckbox(group, "Show MDT-style pull outlines", "showPullOutlines")
+    AddCheckbox(group, "Show route connection lines", "showRouteLines")
+    AddCheckbox(group, "Show enemy icons", "showEnemies")
+    AddCheckbox(group, "Use enemy portraits", "showEnemyPortraits")
+    AddCheckbox(group, "Show unpulled enemies", "showUnpulledEnemies")
+    AddCheckbox(group, "Show tiny enemy dots instead of icons when icons are off", "showEnemyDots")
+    AddCheckbox(group, "Show POIs", "showPOIs")
+
+    AddSlider(group, "Overlay width", MIN_WIDTH, MAX_WIDTH, 1, db.width, function(value)
+      ApplySize(value)
+      SavePosition()
+    end)
+    AddSlider(group, "Overlay alpha", 0.2, 1, 0.05, db.alpha, function(value)
+      db.alpha = Clamp(value, 0.2, 1)
+      if frame then frame:SetAlpha(db.alpha) end
+    end)
+
+    AddButton(group, "Reset Position", function()
+      ResetPosition()
+      RefreshSettingsPage()
+    end)
+  end
+
+  local sideParent = MDT.main_frame.sectionSidePanelFrames and MDT.main_frame.sectionSidePanelFrames.miniRoute
+  if sideParent and not MDT.main_frame.miniRouteSidePanel then
+    local side = AceGUI:Create("SimpleGroup")
+    side.frame:SetParent(sideParent)
+    side.frame:SetFrameStrata("HIGH")
+    side.frame:SetFrameLevel(sideParent:GetFrameLevel() + 1)
+    side:SetWidth(218)
+    side:SetHeight(420)
+    side:SetLayout("Flow")
+    side.settingWidth = 200
+    side.frame:ClearAllPoints()
+    side.frame:SetPoint("TOP", sideParent, "TOP", 0, -38)
+    side.frame:Show()
+    MDT.main_frame.miniRouteSidePanel = side
+
+    local sideHeading = AceGUI:Create("Heading")
+    sideHeading:SetText("Mini Route")
+    sideHeading:SetFullWidth(true)
+    side:AddChild(sideHeading)
+
+    AddButton(side, db.shown and "Hide Overlay" or "Show Overlay", function()
+      ToggleShown()
+      RefreshSettingsPage()
+    end)
+    AddButton(side, db.locked and "Unlock Overlay" or "Lock Overlay", function()
+      SetLocked(not db.locked)
+      RefreshSettingsPage()
+    end)
+    AddButton(side, "Refresh Overlay", function()
+      RequestRefresh()
+      RefreshIfNeeded(true)
+    end)
+    AddButton(side, "Reset Position", function()
+      ResetPosition()
+      RequestRefresh()
+      RefreshIfNeeded(true)
+    end)
+  end
+end
+
+local function RegisterMDTSection()
+  if mdtSectionRegistered then return end
+  local MDT = GetMDT()
+  if not MDT or type(MDT.RegisterNavigationSection) ~= "function" then return end
+  if MDT.GetNavigationSection and MDT:GetNavigationSection("miniRoute") then
+    mdtSectionRegistered = true
+    return
+  end
+
+  MDT:RegisterNavigationSection({
+    key = "miniRoute",
+    tooltip = "Mini Route",
+    texture = MDT_ICON_TEXTURE,
+    texCoords = { 0, 1, 0, 1 },
+    iconSize = 27,
+    iconOffsetY = 0,
+    onShow = BuildMDTSettingsPage,
+  })
+
+  mdtSectionRegistered = true
+end
+
+ResetPosition = function()
   if not frame or not db then return end
   db.point = DEFAULTS.point
   db.relativePoint = DEFAULTS.relativePoint
@@ -634,7 +1079,7 @@ local function ResetPosition()
   ApplySize(db.width)
 end
 
-local function ToggleShown()
+ToggleShown = function()
   db.shown = not db.shown
   if db.shown then
     frame:Show()
@@ -645,7 +1090,7 @@ local function ToggleShown()
   Print(db.shown and "shown" or "hidden")
 end
 
-local function SetLocked(locked)
+SetLocked = function(locked)
   db.locked = locked
   if db.locked then
     frame:SetMovable(false)
@@ -676,9 +1121,33 @@ local function HandleSlash(input)
     db.showAllPulls = not db.showAllPulls
     Print(db.showAllPulls and "showing all pulls" or "showing selected pull only")
     RefreshIfNeeded(true)
+  elseif command == "enemies" then
+    db.showEnemies = not db.showEnemies
+    Print(db.showEnemies and "enemy icons on" or "enemy icons off")
+    RefreshIfNeeded(true)
+  elseif command == "unpulled" then
+    db.showUnpulledEnemies = not db.showUnpulledEnemies
+    Print(db.showUnpulledEnemies and "unpulled enemies on" or "unpulled enemies off")
+    RefreshIfNeeded(true)
   elseif command == "dots" then
     db.showEnemyDots = not db.showEnemyDots
     Print(db.showEnemyDots and "enemy dots on" or "enemy dots off")
+    RefreshIfNeeded(true)
+  elseif command == "pois" then
+    db.showPOIs = not db.showPOIs
+    Print(db.showPOIs and "POIs on" or "POIs off")
+    RefreshIfNeeded(true)
+  elseif command == "outlines" then
+    db.showPullOutlines = not db.showPullOutlines
+    Print(db.showPullOutlines and "pull outlines on" or "pull outlines off")
+    RefreshIfNeeded(true)
+  elseif command == "lines" then
+    db.showRouteLines = not db.showRouteLines
+    Print(db.showRouteLines and "route lines on" or "route lines off")
+    RefreshIfNeeded(true)
+  elseif command == "numbers" then
+    db.showPullNumbers = not db.showPullNumbers
+    Print(db.showPullNumbers and "pull numbers on" or "pull numbers off")
     RefreshIfNeeded(true)
   elseif command == "size" then
     local size = tonumber(rest)
@@ -702,7 +1171,7 @@ local function HandleSlash(input)
     ResetPosition()
     RefreshIfNeeded(true)
   else
-    Print("/mdtmini toggle | show | hide | lock | unlock | all | dots | size <width> | alpha <0.2-1> | reset")
+    Print("/mdtmini toggle | show | hide | lock | unlock | all | enemies | unpulled | dots | pois | outlines | lines | numbers | size <width> | alpha <0.2-1> | reset")
   end
 end
 
@@ -815,11 +1284,15 @@ local function CreateOverlay()
 end
 
 local function Initialize()
+  if initialized then return end
+  initialized = true
+
   MDTMiniRouteDB = CopyDefaults(DEFAULTS, MDTMiniRouteDB)
   db = MDTMiniRouteDB
   db.width = Clamp(db.width, MIN_WIDTH, MAX_WIDTH)
   db.alpha = Clamp(db.alpha, 0.2, 1)
 
+  RegisterMDTSection()
   CreateOverlay()
   HookMDT()
 
@@ -828,7 +1301,6 @@ local function Initialize()
   SlashCmdList.MDTMINIROUTE = HandleSlash
 
   RequestRefresh()
-  RefreshIfNeeded(true)
 end
 
 local eventFrame = CreateFrame("Frame")
@@ -838,6 +1310,8 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
   if event == "ADDON_LOADED" and arg1 == ADDON_NAME then
     Initialize()
   elseif event == "PLAYER_LOGIN" then
+    Initialize()
+    RegisterMDTSection()
     HookMDT()
     RequestRefresh()
     RefreshIfNeeded(true)
