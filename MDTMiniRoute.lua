@@ -17,6 +17,9 @@ local SIDEBAR_MIN_SCALE = 0.5
 local SIDEBAR_MAX_SCALE = 1.8
 local MIN_WIDTH = 220
 local MAX_WIDTH = 720
+local FONT_DEFAULT_NAME = "Default"
+local FONT_SIZE_MIN = 6
+local FONT_SIZE_MAX = 32
 local REFRESH_INTERVAL = 0.35
 
 local CIRCLE_TEXTURE = "Interface\\AddOns\\MythicDungeonTools\\Textures\\Circle_White"
@@ -49,6 +52,14 @@ local DEFAULTS = {
   pullSidebarRelativePoint = "BOTTOMLEFT",
   pullSidebarX = 392,
   pullSidebarY = 245,
+  sidebarFont = FONT_DEFAULT_NAME,
+  sidebarFontSize = 13,
+  sidebarFontOutline = "OUTLINE",
+  sidebarFontShadow = false,
+  mapFont = FONT_DEFAULT_NAME,
+  mapFontSize = 10,
+  mapFontOutline = "OUTLINE",
+  mapFontShadow = false,
   alpha = 0.95,
   iconAlpha = 1,
   dungeonLayouts = {},
@@ -93,6 +104,7 @@ local statusText
 local settingsFrame
 local settingsControls = {}
 local contextMenuFrame
+local pickerMenuFrame
 local monitorFrame
 local smallTiles = {}
 local largeTiles = {}
@@ -115,6 +127,7 @@ local ResetPosition, ToggleShown, SetLocked, ShowSettingsWindow, ShowContextMenu
 local SaveActiveDungeonLayout, UpdateOverlayVisibility
 local ApplySize, RefreshIfNeeded, RefreshSettingsWindow
 local SelectPull, UpdatePullSidebar, LayoutPullSidebar, UpdatePullSidebarHeader
+local UpdateFontSettingControls
 
 local function Print(msg)
   DEFAULT_CHAT_FRAME:AddMessage("|cff66ccffMDT Mini Route:|r "..msg)
@@ -151,6 +164,98 @@ end
 
 local function RouteAlpha(alpha)
   return (alpha or 1) * Clamp(db and db.iconAlpha or DEFAULTS.iconAlpha, 0.2, 1)
+end
+
+local function GetLibSharedMedia()
+  if type(LibStub) == "function" then
+    return LibStub("LibSharedMedia-3.0", true)
+  end
+end
+
+local function ResolveFontPath(fontName)
+  if fontName and fontName ~= FONT_DEFAULT_NAME then
+    local LSM = GetLibSharedMedia()
+    if LSM and type(LSM.Fetch) == "function" then
+      local ok, path = pcall(LSM.Fetch, LSM, "font", fontName, true)
+      if ok and path then return path end
+    end
+    if type(fontName) == "string" and fontName:find("\\", 1, true) then
+      return fontName
+    end
+  end
+
+  return STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF"
+end
+
+local function GetFontChoices()
+  local choices = { FONT_DEFAULT_NAME }
+  local seen = { [FONT_DEFAULT_NAME] = true }
+  local LSM = GetLibSharedMedia()
+
+  if LSM and type(LSM.List) == "function" then
+    local ok, fonts = pcall(LSM.List, LSM, "font")
+    if ok and type(fonts) == "table" then
+      for _, name in ipairs(fonts) do
+        if type(name) == "string" and not seen[name] then
+          choices[#choices + 1] = name
+          seen[name] = true
+        end
+      end
+    end
+  end
+
+  table.sort(choices, function(a, b)
+    if a == FONT_DEFAULT_NAME then return true end
+    if b == FONT_DEFAULT_NAME then return false end
+    return a < b
+  end)
+
+  return choices
+end
+
+local function NormalizeFontName(fontName)
+  if type(fontName) ~= "string" or fontName == "" then
+    return FONT_DEFAULT_NAME
+  end
+  return fontName
+end
+
+local function NormalizeOutline(outline)
+  if outline == "NONE" or outline == "OUTLINE" or outline == "THICKOUTLINE" then
+    return outline
+  end
+  return "OUTLINE"
+end
+
+local function OutlineLabel(outline)
+  outline = NormalizeOutline(outline)
+  if outline == "NONE" then return "None" end
+  if outline == "THICKOUTLINE" then return "Thick" end
+  return "Thin"
+end
+
+local function OutlineFlag(outline)
+  outline = NormalizeOutline(outline)
+  if outline == "NONE" then return "" end
+  return outline
+end
+
+local function ApplyTextStyle(fontString, prefix, fallbackSize, scale, sizeOffset)
+  if not fontString or not db then return end
+
+  scale = scale or 1
+  local fontName = NormalizeFontName(db[prefix.."Font"] or DEFAULTS[prefix.."Font"])
+  local size = Clamp((db[prefix.."FontSize"] or fallbackSize) + (sizeOffset or 0), FONT_SIZE_MIN, FONT_SIZE_MAX) * scale
+  local outline = NormalizeOutline(db[prefix.."FontOutline"] or DEFAULTS[prefix.."FontOutline"])
+
+  fontString:SetFont(ResolveFontPath(fontName), math.max(FONT_SIZE_MIN, math.floor(size + 0.5)), OutlineFlag(outline))
+  if db[prefix.."FontShadow"] then
+    fontString:SetShadowColor(0, 0, 0, 0.85)
+    fontString:SetShadowOffset(1, -1)
+  else
+    fontString:SetShadowColor(0, 0, 0, 0)
+    fontString:SetShadowOffset(0, 0)
+  end
 end
 
 local function GetViewportWidth()
@@ -579,7 +684,6 @@ local function AcquireMarker()
     marker.icon:SetAllPoints()
     marker.text = marker:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     marker.text:SetPoint("CENTER", marker, "CENTER", 0, 0)
-    marker.text:SetFont(marker.text:GetFont(), 10, "OUTLINE")
     markerPool[usedMarkers] = marker
   end
   marker:ClearAllPoints()
@@ -648,8 +752,9 @@ end
 local function DrawMarker(x, y, scale, pullIdx, r, g, b, active, selected)
   local marker = AcquireMarker()
   local size = active and 20 or selected and 18 or 15
+  local fontSize = Clamp(db.mapFontSize or DEFAULTS.mapFontSize, FONT_SIZE_MIN, FONT_SIZE_MAX)
   local alpha = active and 1 or selected and 0.92 or 0.72
-  local scaledSize = math.max(size, math.floor(size * scale * 1.8))
+  local scaledSize = math.max(size, fontSize + 8, math.floor(size * scale * 1.8))
 
   marker:SetSize(scaledSize, scaledSize)
   marker:SetPoint("CENTER", canvas, "TOPLEFT", x * scale, y * scale)
@@ -657,6 +762,7 @@ local function DrawMarker(x, y, scale, pullIdx, r, g, b, active, selected)
   marker.icon:SetVertexColor(r, g, b, 0.92)
   marker.text:SetText(pullIdx)
   marker.text:SetTextColor(1, 1, 1, 1)
+  ApplyTextStyle(marker.text, "map", DEFAULTS.mapFontSize, 1)
 end
 
 local function DrawEnemyIcon(enemy, clone, scale, pullInfo, selected)
@@ -722,11 +828,13 @@ local function HidePullSidebarRows()
 end
 
 local function GetPullSidebarRowHeight()
-  return math.max(18, math.floor(24 * Clamp(db and db.pullSidebarScale or 1, SIDEBAR_MIN_SCALE, SIDEBAR_MAX_SCALE) + 0.5))
+  local fontSize = Clamp(db and db.sidebarFontSize or DEFAULTS.sidebarFontSize, FONT_SIZE_MIN, FONT_SIZE_MAX)
+  return math.max(18, math.floor((fontSize + 11) * Clamp(db and db.pullSidebarScale or 1, SIDEBAR_MIN_SCALE, SIDEBAR_MAX_SCALE) + 0.5))
 end
 
 local function GetPullSidebarHeaderHeight()
-  return math.max(20, math.floor(SIDEBAR_HEADER_HEIGHT * Clamp(db and db.pullSidebarScale or 1, SIDEBAR_MIN_SCALE, SIDEBAR_MAX_SCALE) + 0.5))
+  local fontSize = Clamp(db and db.sidebarFontSize or DEFAULTS.sidebarFontSize, FONT_SIZE_MIN, FONT_SIZE_MAX)
+  return math.max(20, math.floor(math.max(SIDEBAR_HEADER_HEIGHT, fontSize + 10) * Clamp(db and db.pullSidebarScale or 1, SIDEBAR_MIN_SCALE, SIDEBAR_MAX_SCALE) + 0.5))
 end
 
 UpdatePullSidebarHeader = function()
@@ -739,7 +847,7 @@ UpdatePullSidebarHeader = function()
   if pullSidebarShowAllButton.text then
     pullSidebarShowAllButton.text:SetText("All Pulls")
     pullSidebarShowAllButton.text:SetTextColor(active and 1 or 0.75, active and 0.9 or 0.78, active and 0.15 or 0.85, 1)
-    pullSidebarShowAllButton.text:SetFont(pullSidebarShowAllButton.text:GetFont(), math.max(11, math.floor(12 * scale + 0.5)), "OUTLINE")
+    ApplyTextStyle(pullSidebarShowAllButton.text, "sidebar", DEFAULTS.sidebarFontSize, scale, -1)
   end
 end
 
@@ -833,12 +941,10 @@ local function AcquirePullSidebarRow(index)
   row.number = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
   row.number:SetPoint("LEFT", row, "LEFT", 5, 0)
   row.number:SetJustifyH("LEFT")
-  row.number:SetFont(row.number:GetFont(), 13, "OUTLINE")
 
   row.percent = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   row.percent:SetPoint("RIGHT", row, "RIGHT", -5, 0)
   row.percent:SetJustifyH("RIGHT")
-  row.percent:SetFont(row.percent:GetFont(), 11, "OUTLINE")
 
   row:SetScript("OnMouseWheel", function(_, delta)
     ScrollPullSidebar(delta)
@@ -910,13 +1016,13 @@ UpdatePullSidebar = function(mdtDB, preset)
     row.number:ClearAllPoints()
     row.number:SetPoint("LEFT", row, "LEFT", math.max(5, 6 * sidebarScale), 0)
     row.number:SetWidth(db.showPullPercent == false and rowWidth - 10 or math.max(26, 30 * sidebarScale))
-    row.number:SetFont(row.number:GetFont(), math.max(12, math.floor(13 * sidebarScale + 0.5)), "OUTLINE")
+    ApplyTextStyle(row.number, "sidebar", DEFAULTS.sidebarFontSize, sidebarScale)
 
     if db.showPullPercent == false then
       row.percent:Hide()
     else
       row.percent:SetText(FormatPercent(GetPullForces(MDT, mdtDB, preset, pullIdx, false), maxForces))
-      row.percent:SetFont(row.percent:GetFont(), math.max(10, math.floor(11 * sidebarScale + 0.5)), "OUTLINE")
+      ApplyTextStyle(row.percent, "sidebar", DEFAULTS.sidebarFontSize, sidebarScale, -2)
       row.percent:Show()
     end
 
@@ -1407,6 +1513,14 @@ local function BuildSignature()
     tostring(db.pullSidebarWidth),
     tostring(db.pullSidebarHeight),
     tostring(db.pullSidebarScale),
+    tostring(db.sidebarFont),
+    tostring(db.sidebarFontSize),
+    tostring(db.sidebarFontOutline),
+    tostring(db.sidebarFontShadow),
+    tostring(db.mapFont),
+    tostring(db.mapFontSize),
+    tostring(db.mapFontOutline),
+    tostring(db.mapFontShadow),
     tostring(db.alpha),
     tostring(db.iconAlpha),
     tostring(activeLayoutDungeonIdx),
@@ -1568,6 +1682,7 @@ RefreshSettingsWindow = function()
   if UpdatePullSidebarHeader then
     UpdatePullSidebarHeader()
   end
+  UpdateFontSettingControls()
   UpdateSettingsControlVisibility()
   settingsUpdating = false
 end
@@ -1594,6 +1709,140 @@ local function MakeNativeButton(parent, text, x, y, width, callback)
   button:SetText(text)
   button:SetScript("OnClick", callback)
   return button
+end
+
+local function ShortText(text, maxLength)
+  text = tostring(text or "")
+  if #text <= maxLength then return text end
+  return text:sub(1, maxLength - 3).."..."
+end
+
+local function SetFontSetting(prefix, key, value)
+  if not db then return end
+
+  db[prefix..key] = value
+  RequestRefresh()
+  RefreshIfNeeded(true)
+  RefreshSettingsWindow()
+end
+
+local function AdjustFontSize(prefix, delta)
+  if not db then return end
+
+  local key = prefix.."FontSize"
+  db[key] = Clamp((db[key] or DEFAULTS[key]) + delta, FONT_SIZE_MIN, FONT_SIZE_MAX)
+  RequestRefresh()
+  RefreshIfNeeded(true)
+  RefreshSettingsWindow()
+end
+
+UpdateFontSettingControls = function()
+  if not db then return end
+
+  local fontButtons = settingsControls.fontButtons
+  if fontButtons then
+    if fontButtons.sidebar then
+      fontButtons.sidebar:SetText("Font: "..ShortText(NormalizeFontName(db.sidebarFont), 16))
+    end
+    if fontButtons.map then
+      fontButtons.map:SetText("Font: "..ShortText(NormalizeFontName(db.mapFont), 16))
+    end
+  end
+
+  local outlineButtons = settingsControls.outlineButtons
+  if outlineButtons then
+    if outlineButtons.sidebar then
+      outlineButtons.sidebar:SetText("Outline: "..OutlineLabel(db.sidebarFontOutline))
+    end
+    if outlineButtons.map then
+      outlineButtons.map:SetText("Outline: "..OutlineLabel(db.mapFontOutline))
+    end
+  end
+
+  local sizeTexts = settingsControls.fontSizeTexts
+  if sizeTexts then
+    if sizeTexts.sidebar then
+      sizeTexts.sidebar:SetText("Size: "..tostring(math.floor((db.sidebarFontSize or DEFAULTS.sidebarFontSize) + 0.5)))
+    end
+    if sizeTexts.map then
+      sizeTexts.map:SetText("Size: "..tostring(math.floor((db.mapFontSize or DEFAULTS.mapFontSize) + 0.5)))
+    end
+  end
+end
+
+local function ShowPickerMenu(anchor, values, currentValue, onPick)
+  if not pickerMenuFrame then
+    pickerMenuFrame = CreateFrame("Frame", "MDTMiniRoutePickerMenu", UIParent, "UIDropDownMenuTemplate")
+  end
+
+  local menu = {}
+  for _, value in ipairs(values) do
+    local text = type(value) == "table" and value.text or value
+    local storedValue = type(value) == "table" and value.value or value
+    menu[#menu + 1] = {
+      text = text,
+      checked = storedValue == currentValue,
+      isNotRadio = false,
+      func = function()
+        onPick(storedValue)
+      end,
+    }
+  end
+
+  if EasyMenu then
+    EasyMenu(menu, pickerMenuFrame, anchor or "cursor", 0, 0, "MENU", 2)
+  elseif values[1] then
+    local first = type(values[1]) == "table" and values[1].value or values[1]
+    onPick(first)
+  end
+end
+
+local function ShowFontPicker(anchor, prefix)
+  ShowPickerMenu(anchor, GetFontChoices(), NormalizeFontName(db[prefix.."Font"]), function(value)
+    SetFontSetting(prefix, "Font", NormalizeFontName(value))
+  end)
+end
+
+local function ShowOutlinePicker(anchor, prefix)
+  ShowPickerMenu(anchor, {
+    { text = "None", value = "NONE" },
+    { text = "Thin", value = "OUTLINE" },
+    { text = "Thick", value = "THICKOUTLINE" },
+  }, NormalizeOutline(db[prefix.."FontOutline"]), function(value)
+    SetFontSetting(prefix, "FontOutline", NormalizeOutline(value))
+  end)
+end
+
+local function MakeFontControls(parent, title, prefix, x, y)
+  settingsControls.fontButtons = settingsControls.fontButtons or {}
+  settingsControls.outlineButtons = settingsControls.outlineButtons or {}
+  settingsControls.fontSizeTexts = settingsControls.fontSizeTexts or {}
+
+  local section = parent:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+  section:SetPoint("TOPLEFT", parent, "TOPLEFT", x, y)
+  section:SetText(title)
+
+  settingsControls.fontButtons[prefix] = MakeNativeButton(parent, "", x, y - 22, 150, function(button)
+    ShowFontPicker(button, prefix)
+  end)
+  settingsControls.outlineButtons[prefix] = MakeNativeButton(parent, "", x + 156, y - 22, 106, function(button)
+    ShowOutlinePicker(button, prefix)
+  end)
+  MakeNativeCheck(parent, "Shadow", prefix.."FontShadow", x + 266, y - 23)
+
+  MakeNativeButton(parent, "-", x, y - 52, 28, function()
+    AdjustFontSize(prefix, -1)
+  end)
+
+  local sizeText = parent:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+  sizeText:SetPoint("LEFT", parent, "TOPLEFT", x + 38, y - 64)
+  sizeText:SetWidth(68)
+  sizeText:SetJustifyH("LEFT")
+  settingsControls.fontSizeTexts[prefix] = sizeText
+
+  MakeNativeButton(parent, "+", x + 110, y - 52, 28, function()
+    AdjustFontSize(prefix, 1)
+  end)
 end
 
 local function FormatSliderValue(value, step)
@@ -1666,7 +1915,7 @@ local function CreateSettingsWindow()
   settingsFrame:SetMovable(true)
   settingsFrame:EnableMouse(true)
   settingsFrame:RegisterForDrag("LeftButton")
-  settingsFrame:SetSize(330, 748)
+  settingsFrame:SetSize(360, 948)
   settingsFrame:SetBackdrop({
     bgFile = "Interface\\Buttons\\WHITE8X8",
     edgeFile = "Interface\\Buttons\\WHITE8X8",
@@ -1754,13 +2003,16 @@ local function CreateSettingsWindow()
     RefreshIfNeeded(true)
   end)
 
-  MakeNativeButton(settingsFrame, "Reset Position", 14, -708, 120, function()
+  MakeFontControls(settingsFrame, "Sidebar font", "sidebar", 14, -718)
+  MakeFontControls(settingsFrame, "Minimap font", "map", 14, -812)
+
+  MakeNativeButton(settingsFrame, "Reset Position", 14, -908, 120, function()
     ResetPosition()
     RequestRefresh()
     RefreshIfNeeded(true)
     RefreshSettingsWindow()
   end)
-  MakeNativeButton(settingsFrame, "Hide Overlay", 144, -708, 120, function()
+  MakeNativeButton(settingsFrame, "Hide Overlay", 144, -908, 120, function()
     SetBooleanOption("shown", false, true)
     RefreshSettingsWindow()
   end)
@@ -2234,6 +2486,14 @@ local function Initialize()
   db.pullSidebarRelativePoint = db.pullSidebarRelativePoint or DEFAULTS.pullSidebarRelativePoint
   db.pullSidebarX = db.pullSidebarX or DEFAULTS.pullSidebarX
   db.pullSidebarY = db.pullSidebarY or DEFAULTS.pullSidebarY
+  db.sidebarFont = NormalizeFontName(db.sidebarFont)
+  db.sidebarFontSize = Clamp(db.sidebarFontSize or DEFAULTS.sidebarFontSize, FONT_SIZE_MIN, FONT_SIZE_MAX)
+  db.sidebarFontOutline = NormalizeOutline(db.sidebarFontOutline)
+  db.sidebarFontShadow = db.sidebarFontShadow == true
+  db.mapFont = NormalizeFontName(db.mapFont)
+  db.mapFontSize = Clamp(db.mapFontSize or DEFAULTS.mapFontSize, FONT_SIZE_MIN, FONT_SIZE_MAX)
+  db.mapFontOutline = NormalizeOutline(db.mapFontOutline)
+  db.mapFontShadow = db.mapFontShadow == true
   if type(db.dungeonLayouts) ~= "table" then
     db.dungeonLayouts = {}
   end
