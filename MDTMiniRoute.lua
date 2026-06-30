@@ -17,15 +17,14 @@ local DEFAULTS = {
   shown = true,
   locked = false,
   showAllPulls = true,
-  showEnemies = true,
-  showUnpulledEnemies = true,
+  showEnemies = false,
+  showUnpulledEnemies = false,
   showEnemyDots = false,
-  showEnemyPortraits = true,
-  showPOIs = true,
+  showEnemyPortraits = false,
+  showPOIs = false,
   showPullOutlines = true,
   showPullNumbers = true,
   showRouteLines = false,
-  openSettingsWithMDT = true,
   alpha = 0.95,
   width = 348,
   point = "BOTTOMLEFT",
@@ -65,7 +64,6 @@ local monitorFrame
 local smallTiles = {}
 local largeTiles = {}
 local hooksInstalled
-local mdtSettingsInjected
 local initialized
 local dirty = true
 local lastSignature
@@ -896,130 +894,6 @@ local function HookMDTDisabled()
   hooksInstalled = true
 end
 
-local function AddCheckbox(parent, label, key, callback)
-  local AceGUI = LibStub and LibStub("AceGUI-3.0", true)
-  if not AceGUI then return end
-
-  local checkbox = AceGUI:Create("CheckBox")
-  checkbox:SetLabel(label)
-  checkbox:SetWidth(parent.settingWidth or 320)
-  checkbox:SetValue(db[key] == true)
-  checkbox:SetCallback("OnValueChanged", function(_, _, value)
-    db[key] = value == true
-    if callback then callback(db[key]) end
-    RequestRefresh()
-    RefreshIfNeeded(true)
-  end)
-  parent:AddChild(checkbox)
-  return checkbox
-end
-
-local function AddButton(parent, text, callback)
-  local AceGUI = LibStub and LibStub("AceGUI-3.0", true)
-  if not AceGUI then return end
-
-  local button = AceGUI:Create("Button")
-  button:SetText(text)
-  button:SetWidth(parent.settingWidth or 220)
-  button:SetCallback("OnClick", callback)
-  parent:AddChild(button)
-  return button
-end
-
-local function AddSlider(parent, label, minValue, maxValue, step, value, callback)
-  local AceGUI = LibStub and LibStub("AceGUI-3.0", true)
-  if not AceGUI then return end
-
-  local slider = AceGUI:Create("Slider")
-  slider:SetLabel(label)
-  slider:SetWidth(parent.settingWidth or 320)
-  slider:SetSliderValues(minValue, maxValue, step)
-  slider:SetValue(value)
-  slider:SetCallback("OnMouseUp", function(_, _, newValue)
-    callback(newValue)
-    RequestRefresh()
-    RefreshIfNeeded(true)
-  end)
-  parent:AddChild(slider)
-  return slider
-end
-
-local function InjectMDTSettings()
-  if mdtSettingsInjected then return end
-  local MDT = GetMDT()
-  local AceGUI = LibStub and LibStub("AceGUI-3.0", true)
-  local mdtFrame = MDT and MDT.main_frame
-  local parent = mdtFrame and mdtFrame.settingsGeneralColumn
-  if not MDT or not AceGUI or not parent then return end
-
-  mdtSettingsInjected = true
-
-  local heading = AceGUI:Create("Heading")
-  heading:SetText("Mini Route")
-  heading:SetFullWidth(true)
-  parent:AddChild(heading)
-
-  local label = AceGUI:Create("Label")
-  label:SetText("Mini Route is loaded as a separate MDT plugin. These controls only affect the mini overlay.")
-  label:SetFullWidth(true)
-  parent:AddChild(label)
-
-  AddCheckbox(parent, "Show mini route overlay", "shown", function(value)
-    if frame then
-      if value then frame:Show() else frame:Hide() end
-    end
-  end)
-  AddCheckbox(parent, "Lock overlay position", "locked", function(value)
-    if frame then frame:SetMovable(not value) end
-  end)
-  AddCheckbox(parent, "Show all pulls", "showAllPulls")
-  AddCheckbox(parent, "Show pull numbers", "showPullNumbers")
-  AddCheckbox(parent, "Show MDT-style pull outlines", "showPullOutlines")
-  AddCheckbox(parent, "Show route connection lines", "showRouteLines")
-  AddCheckbox(parent, "Show enemy icons", "showEnemies")
-  AddCheckbox(parent, "Use enemy portraits", "showEnemyPortraits")
-  AddCheckbox(parent, "Show unpulled enemies", "showUnpulledEnemies")
-  AddCheckbox(parent, "Show tiny enemy dots when icons are off", "showEnemyDots")
-  AddCheckbox(parent, "Show POIs", "showPOIs")
-
-  AddSlider(parent, "Mini Route width", MIN_WIDTH, MAX_WIDTH, 1, db.width, function(value)
-    ApplySize(value)
-    SavePosition()
-  end)
-  AddSlider(parent, "Mini Route alpha", 0.2, 1, 0.05, db.alpha, function(value)
-    db.alpha = Clamp(value, 0.2, 1)
-    if frame then frame:SetAlpha(db.alpha) end
-  end)
-
-  AddButton(parent, "Reset Mini Route Position", function()
-    ResetPosition()
-    RequestRefresh()
-    RefreshIfNeeded(true)
-  end)
-
-  if parent.DoLayout then parent:DoLayout() end
-  if MDT.Settings_RefreshLayout then MDT:Settings_RefreshLayout() end
-end
-
-local function QueueMDTSettingsInjection()
-  -- Disabled for now: injecting AceGUI controls into MDT's settings during the
-  -- first MDT open can prevent /mdt from showing without surfacing Lua errors.
-  return
-end
-
-local function QueueMDTSettingsInjectionDisabled()
-  local MDT = GetMDT()
-  if not MDT then return end
-
-  if MDT.main_frame and MDT.main_frame.settingsGeneralColumn then
-    pcall(InjectMDTSettings)
-  elseif type(MDT.RunAfterFramesInitialized) == "function" then
-    MDT:RunAfterFramesInitialized(function()
-      pcall(InjectMDTSettings)
-    end)
-  end
-end
-
 local nativeControlIndex = 0
 
 local function NextControlName(prefix)
@@ -1065,11 +939,13 @@ local function SetBooleanOption(key, value, silent)
     if SetLocked then
       SetLocked(db.locked, silent)
     end
-  elseif key ~= "openSettingsWithMDT" then
+  else
     RequestRefresh()
     RefreshIfNeeded(true)
   end
 end
+
+local UpdatePullDropdown
 
 local function RefreshSettingsWindow()
   if not settingsFrame or not db then return end
@@ -1086,6 +962,7 @@ local function RefreshSettingsWindow()
   if settingsControls.alphaSlider then
     settingsControls.alphaSlider:SetValue(db.alpha or DEFAULTS.alpha)
   end
+  UpdatePullDropdown()
   settingsUpdating = false
 end
 
@@ -1151,6 +1028,50 @@ local function MakeNativeSlider(parent, label, minValue, maxValue, step, x, y, c
   return slider
 end
 
+local function SelectPull(pullIdx)
+  pullIdx = tonumber(pullIdx)
+  if not pullIdx then return end
+
+  local MDT = GetMDT()
+  local preset = GetCurrentPreset()
+  if not preset or not preset.value or not preset.value.pulls or not preset.value.pulls[pullIdx] then return end
+
+  local ok
+  if MDT and type(MDT.SetSelectionToPull) == "function" then
+    ok = pcall(MDT.SetSelectionToPull, MDT, pullIdx)
+  end
+  if not ok then
+    preset.value.currentPull = pullIdx
+    preset.value.selection = { pullIdx }
+  end
+
+  db.showAllPulls = false
+  RequestRefresh()
+  RefreshIfNeeded(true)
+  RefreshSettingsWindow()
+end
+
+UpdatePullDropdown = function()
+  local dropdown = settingsControls.pullDropdown
+  if not dropdown then return end
+
+  local preset = GetCurrentPreset()
+  local pulls = preset and preset.value and preset.value.pulls
+  local currentPull = preset and preset.value and preset.value.currentPull
+  local pullCount = type(pulls) == "table" and #pulls or 0
+
+  if pullCount <= 0 then
+    UIDropDownMenu_SetText(dropdown, "No route")
+    return
+  end
+
+  currentPull = tonumber(currentPull) or 1
+  if currentPull < 1 or currentPull > pullCount then
+    currentPull = 1
+  end
+  UIDropDownMenu_SetText(dropdown, "Pull "..currentPull)
+end
+
 local function CreateSettingsWindow()
   if settingsFrame then return end
 
@@ -1160,7 +1081,7 @@ local function CreateSettingsWindow()
   settingsFrame:SetMovable(true)
   settingsFrame:EnableMouse(true)
   settingsFrame:RegisterForDrag("LeftButton")
-  settingsFrame:SetSize(330, 500)
+  settingsFrame:SetSize(330, 410)
   settingsFrame:SetBackdrop({
     bgFile = "Interface\\Buttons\\WHITE8X8",
     edgeFile = "Interface\\Buttons\\WHITE8X8",
@@ -1197,39 +1118,69 @@ local function CreateSettingsWindow()
   end)
 
   MakeNativeCheck(settingsFrame, "Show mini route overlay", "shown", 14, -42)
-  MakeNativeCheck(settingsFrame, "Open options with MDT", "openSettingsWithMDT", 14, -66)
-  MakeNativeCheck(settingsFrame, "Lock overlay position", "locked", 14, -90)
-  MakeNativeCheck(settingsFrame, "Show all pulls", "showAllPulls", 14, -124)
-  MakeNativeCheck(settingsFrame, "Show pull numbers", "showPullNumbers", 14, -148)
-  MakeNativeCheck(settingsFrame, "Show MDT-style pull outlines", "showPullOutlines", 14, -172)
-  MakeNativeCheck(settingsFrame, "Show route connection lines", "showRouteLines", 14, -196)
-  MakeNativeCheck(settingsFrame, "Show enemy icons", "showEnemies", 14, -230)
-  MakeNativeCheck(settingsFrame, "Use enemy portraits", "showEnemyPortraits", 14, -254)
-  MakeNativeCheck(settingsFrame, "Show unpulled enemies", "showUnpulledEnemies", 14, -278)
-  MakeNativeCheck(settingsFrame, "Show tiny enemy dots", "showEnemyDots", 14, -302)
-  MakeNativeCheck(settingsFrame, "Show POIs", "showPOIs", 14, -326)
+  MakeNativeCheck(settingsFrame, "Lock overlay position", "locked", 14, -66)
+  MakeNativeCheck(settingsFrame, "Show all pulls", "showAllPulls", 14, -100)
 
-  settingsControls.widthSlider = MakeNativeSlider(settingsFrame, "Overlay width", MIN_WIDTH, MAX_WIDTH, 1, 22, -372, function(value)
+  local pullLabel = settingsFrame:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+  pullLabel:SetPoint("TOPLEFT", settingsFrame, "TOPLEFT", 18, -130)
+  pullLabel:SetText("Selected pull")
+
+  local pullDropdown = CreateFrame("Frame", NextControlName("PullDropdown"), settingsFrame, "UIDropDownMenuTemplate")
+  pullDropdown:SetPoint("TOPLEFT", settingsFrame, "TOPLEFT", -2, -146)
+  UIDropDownMenu_SetWidth(pullDropdown, 130)
+  UIDropDownMenu_Initialize(pullDropdown, function(_, level)
+    if level ~= 1 then return end
+
+    local preset = GetCurrentPreset()
+    local pulls = preset and preset.value and preset.value.pulls
+    local currentPull = tonumber(preset and preset.value and preset.value.currentPull) or 1
+    local pullCount = type(pulls) == "table" and #pulls or 0
+    if pullCount <= 0 then
+      local info = UIDropDownMenu_CreateInfo()
+      info.text = "No route"
+      info.disabled = true
+      UIDropDownMenu_AddButton(info, level)
+      return
+    end
+
+    for i = 1, pullCount do
+      local pullIdx = i
+      local info = UIDropDownMenu_CreateInfo()
+      info.text = "Pull "..pullIdx
+      info.checked = pullIdx == currentPull
+      info.func = function()
+        SelectPull(pullIdx)
+      end
+      UIDropDownMenu_AddButton(info, level)
+    end
+  end)
+  settingsControls.pullDropdown = pullDropdown
+
+  MakeNativeCheck(settingsFrame, "Show pull numbers", "showPullNumbers", 14, -192)
+  MakeNativeCheck(settingsFrame, "Show MDT-style pull outlines", "showPullOutlines", 14, -216)
+  MakeNativeCheck(settingsFrame, "Show route connection lines", "showRouteLines", 14, -240)
+
+  settingsControls.widthSlider = MakeNativeSlider(settingsFrame, "Overlay width", MIN_WIDTH, MAX_WIDTH, 1, 22, -286, function(value)
     ApplySize(value)
     SavePosition()
     RequestRefresh()
     RefreshIfNeeded(true)
   end)
 
-  settingsControls.alphaSlider = MakeNativeSlider(settingsFrame, "Overlay alpha", 0.2, 1, 0.05, 22, -426, function(value)
+  settingsControls.alphaSlider = MakeNativeSlider(settingsFrame, "Overlay alpha", 0.2, 1, 0.05, 22, -340, function(value)
     db.alpha = Clamp(value, 0.2, 1)
     if frame then
       frame:SetAlpha(db.alpha)
     end
   end)
 
-  MakeNativeButton(settingsFrame, "Reset Position", 14, -468, 120, function()
+  MakeNativeButton(settingsFrame, "Reset Position", 14, -382, 120, function()
     ResetPosition()
     RequestRefresh()
     RefreshIfNeeded(true)
     RefreshSettingsWindow()
   end)
-  MakeNativeButton(settingsFrame, "Hide Overlay", 144, -468, 120, function()
+  MakeNativeButton(settingsFrame, "Hide Overlay", 144, -382, 120, function()
     SetBooleanOption("shown", false, true)
     RefreshSettingsWindow()
   end)
@@ -1260,18 +1211,36 @@ ShowContextMenu = function(anchor)
     contextMenuFrame = CreateFrame("Frame", "MDTMiniRouteContextMenu", UIParent, "UIDropDownMenuTemplate")
   end
 
+  local pullMenu = {}
+  local preset = GetCurrentPreset()
+  local pulls = preset and preset.value and preset.value.pulls
+  local currentPull = tonumber(preset and preset.value and preset.value.currentPull) or 1
+  local pullCount = type(pulls) == "table" and #pulls or 0
+  if pullCount > 0 then
+    for i = 1, pullCount do
+      local pullIdx = i
+      pullMenu[#pullMenu + 1] = {
+        text = "Pull "..pullIdx,
+        checked = pullIdx == currentPull,
+        func = function()
+          SelectPull(pullIdx)
+        end,
+      }
+    end
+  else
+    pullMenu[1] = { text = "No route", disabled = true, notCheckable = true }
+  end
+
   local menu = {
     { text = TITLE, isTitle = true, notCheckable = true },
     { text = "Options", notCheckable = true, func = function() ShowSettingsWindow(false) end },
+    { text = "Selected pull", hasArrow = true, notCheckable = true, menuList = pullMenu },
     { text = db.shown and "Hide overlay" or "Show overlay", notCheckable = true, func = ToggleShown },
     { text = db.locked and "Unlock overlay" or "Lock overlay", notCheckable = true, func = function() SetLocked(not db.locked) RefreshSettingsWindow() end },
     { text = "Show all pulls", checked = db.showAllPulls, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showAllPulls") end },
     { text = "Show pull numbers", checked = db.showPullNumbers, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showPullNumbers") end },
     { text = "Show pull outlines", checked = db.showPullOutlines, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showPullOutlines") end },
     { text = "Show route lines", checked = db.showRouteLines, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showRouteLines") end },
-    { text = "Show enemy icons", checked = db.showEnemies, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showEnemies") end },
-    { text = "Show unpulled enemies", checked = db.showUnpulledEnemies, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showUnpulledEnemies") end },
-    { text = "Show POIs", checked = db.showPOIs, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showPOIs") end },
     { text = "Reset position", notCheckable = true, func = function() ResetPosition() RequestRefresh() RefreshIfNeeded(true) RefreshSettingsWindow() end },
   }
 
@@ -1296,11 +1265,6 @@ local function CreateMDTMonitor()
 
     local MDT = GetMDT()
     local mdtShown = MDT and MDT.main_frame and MDT.main_frame:IsShown() == true
-    if not db.openSettingsWithMDT then
-      lastMDTShown = mdtShown
-      return
-    end
-
     if mdtShown and not lastMDTShown then
       ShowSettingsWindow(true)
     elseif not mdtShown and lastMDTShown and settingsOpenedWithMDT and settingsFrame then
@@ -1365,25 +1329,32 @@ local function HandleSlash(input)
     SetLocked(true)
   elseif command == "unlock" then
     SetLocked(false)
+  elseif command == "pull" then
+    local pullIdx = tonumber(rest)
+    if pullIdx then
+      SelectPull(pullIdx)
+    else
+      Print("usage: /mdtmini pull 3")
+    end
   elseif command == "all" then
     db.showAllPulls = not db.showAllPulls
     Print(db.showAllPulls and "showing all pulls" or "showing selected pull only")
     RefreshIfNeeded(true)
   elseif command == "enemies" then
-    db.showEnemies = not db.showEnemies
-    Print(db.showEnemies and "enemy icons on" or "enemy icons off")
+    db.showEnemies = false
+    Print("enemy icons are disabled in this build")
     RefreshIfNeeded(true)
   elseif command == "unpulled" then
-    db.showUnpulledEnemies = not db.showUnpulledEnemies
-    Print(db.showUnpulledEnemies and "unpulled enemies on" or "unpulled enemies off")
+    db.showUnpulledEnemies = false
+    Print("unpulled enemy display is disabled in this build")
     RefreshIfNeeded(true)
   elseif command == "dots" then
-    db.showEnemyDots = not db.showEnemyDots
-    Print(db.showEnemyDots and "enemy dots on" or "enemy dots off")
+    db.showEnemyDots = false
+    Print("enemy dots are disabled in this build")
     RefreshIfNeeded(true)
   elseif command == "pois" then
-    db.showPOIs = not db.showPOIs
-    Print(db.showPOIs and "POIs on" or "POIs off")
+    db.showPOIs = false
+    Print("POIs are disabled in this build")
     RefreshIfNeeded(true)
   elseif command == "outlines" then
     db.showPullOutlines = not db.showPullOutlines
@@ -1419,7 +1390,7 @@ local function HandleSlash(input)
     ResetPosition()
     RefreshIfNeeded(true)
   else
-    Print("/mdtmini options | toggle | show | hide | lock | unlock | all | enemies | unpulled | dots | pois | outlines | lines | numbers | size <width> | alpha <0.2-1> | reset")
+    Print("/mdtmini options | toggle | show | hide | lock | unlock | pull <number> | all | outlines | lines | numbers | size <width> | alpha <0.2-1> | reset")
   end
 end
 
@@ -1547,11 +1518,15 @@ local function Initialize()
   db = MDTMiniRouteDB
   db.width = Clamp(db.width, MIN_WIDTH, MAX_WIDTH)
   db.alpha = Clamp(db.alpha, 0.2, 1)
+  db.showEnemies = false
+  db.showEnemyPortraits = false
+  db.showUnpulledEnemies = false
+  db.showEnemyDots = false
+  db.showPOIs = false
 
   CreateOverlay()
   CreateMDTMonitor()
   HookMDT()
-  QueueMDTSettingsInjection()
 
   SLASH_MDTMINIROUTE1 = "/mdtmini"
   SLASH_MDTMINIROUTE2 = "/mdtroute"
@@ -1568,7 +1543,6 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
     Initialize()
   elseif event == "PLAYER_LOGIN" then
     Initialize()
-    QueueMDTSettingsInjection()
     HookMDT()
     RequestRefresh()
     RefreshIfNeeded(true)
