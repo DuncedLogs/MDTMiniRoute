@@ -1,0 +1,11 @@
+## Interface: 120007, 120001, 50504
+# WOW_INTERFACE_TARGETS: mainline-beta, mainline-test, mainline, mists
+## Title: MDT Mini Route
+## Author: Dunced/Codex
+## Version: 0.1.0
+## Notes: Movable mini overlay for the currently selected Mythic Dungeon Tools route.
+## RequiredDeps: MythicDungeonTools
+## SavedVariables: MDTMiniRouteDB
+## IconTexture: Interface\AddOns\MythicDungeonTools\Textures\MDTMinimap
+
+MDTMiniRoute.lua
