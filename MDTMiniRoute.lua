@@ -1650,6 +1650,15 @@ local function UpdateSettingsControlVisibility()
       sidebarLockCheck:Hide()
     end
   end
+
+  local unpulledDotsCheck = settingsControls.checks.showUnpulledEnemies
+  if unpulledDotsCheck then
+    if db and db.showEnemyDots then
+      unpulledDotsCheck:Show()
+    else
+      unpulledDotsCheck:Hide()
+    end
+  end
 end
 
 RefreshSettingsWindow = function()
@@ -1915,7 +1924,7 @@ local function CreateSettingsWindow()
   settingsFrame:SetMovable(true)
   settingsFrame:EnableMouse(true)
   settingsFrame:RegisterForDrag("LeftButton")
-  settingsFrame:SetSize(360, 948)
+  settingsFrame:SetSize(360, 996)
   settingsFrame:SetBackdrop({
     bgFile = "Interface\\Buttons\\WHITE8X8",
     edgeFile = "Interface\\Buttons\\WHITE8X8",
@@ -1964,55 +1973,57 @@ local function CreateSettingsWindow()
   MakeNativeCheck(settingsFrame, "Show pull numbers on map", "showPullNumbers", 14, -302)
   MakeNativeCheck(settingsFrame, "Show MDT-style pull outlines", "showPullOutlines", 14, -326)
   MakeNativeCheck(settingsFrame, "Show route connection lines", "showRouteLines", 14, -350)
+  MakeNativeCheck(settingsFrame, "Show mob dots on map", "showEnemyDots", 14, -374)
+  MakeNativeCheck(settingsFrame, "Include unpulled mob dots", "showUnpulledEnemies", 34, -398)
 
-  settingsControls.widthSlider = MakeNativeSlider(settingsFrame, "Overlay width", MIN_WIDTH, MAX_WIDTH, 1, 22, -396, function(value)
+  settingsControls.widthSlider = MakeNativeSlider(settingsFrame, "Overlay width", MIN_WIDTH, MAX_WIDTH, 1, 22, -444, function(value)
     ApplySize(value)
     SavePosition()
     RequestRefresh()
     RefreshIfNeeded(true)
   end)
 
-  settingsControls.sidebarWidthSlider = MakeNativeSlider(settingsFrame, "Sidebar width", SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH, 1, 22, -450, function(value)
+  settingsControls.sidebarWidthSlider = MakeNativeSlider(settingsFrame, "Sidebar width", SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH, 1, 22, -498, function(value)
     db.pullSidebarWidth = Clamp(value, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH)
     ApplySize(db.width)
     RefreshIfNeeded(true)
   end)
 
-  settingsControls.sidebarHeightSlider = MakeNativeSlider(settingsFrame, "Sidebar length", SIDEBAR_MIN_HEIGHT, SIDEBAR_MAX_HEIGHT, 1, 22, -504, function(value)
+  settingsControls.sidebarHeightSlider = MakeNativeSlider(settingsFrame, "Sidebar length", SIDEBAR_MIN_HEIGHT, SIDEBAR_MAX_HEIGHT, 1, 22, -552, function(value)
     db.pullSidebarHeight = Clamp(value, SIDEBAR_MIN_HEIGHT, SIDEBAR_MAX_HEIGHT)
     ApplySize(db.width)
     RefreshIfNeeded(true)
   end)
 
-  settingsControls.sidebarScaleSlider = MakeNativeSlider(settingsFrame, "Sidebar scale", SIDEBAR_MIN_SCALE, SIDEBAR_MAX_SCALE, 0.05, 22, -558, function(value)
+  settingsControls.sidebarScaleSlider = MakeNativeSlider(settingsFrame, "Sidebar scale", SIDEBAR_MIN_SCALE, SIDEBAR_MAX_SCALE, 0.05, 22, -606, function(value)
     db.pullSidebarScale = Clamp(value, SIDEBAR_MIN_SCALE, SIDEBAR_MAX_SCALE)
     ApplySize(db.width)
     RefreshIfNeeded(true)
   end)
 
-  settingsControls.alphaSlider = MakeNativeSlider(settingsFrame, "Map alpha", 0.2, 1, 0.05, 22, -612, function(value)
+  settingsControls.alphaSlider = MakeNativeSlider(settingsFrame, "Map alpha", 0.2, 1, 0.05, 22, -660, function(value)
     db.alpha = Clamp(value, 0.2, 1)
     ApplyMapAlpha()
     SaveActiveDungeonLayout()
   end)
 
-  settingsControls.iconAlphaSlider = MakeNativeSlider(settingsFrame, "Icon alpha", 0.2, 1, 0.05, 22, -666, function(value)
+  settingsControls.iconAlphaSlider = MakeNativeSlider(settingsFrame, "Icon alpha", 0.2, 1, 0.05, 22, -714, function(value)
     db.iconAlpha = Clamp(value, 0.2, 1)
     SaveActiveDungeonLayout()
     RequestRefresh()
     RefreshIfNeeded(true)
   end)
 
-  MakeFontControls(settingsFrame, "Sidebar font", "sidebar", 14, -718)
-  MakeFontControls(settingsFrame, "Minimap font", "map", 14, -812)
+  MakeFontControls(settingsFrame, "Sidebar font", "sidebar", 14, -766)
+  MakeFontControls(settingsFrame, "Minimap font", "map", 14, -860)
 
-  MakeNativeButton(settingsFrame, "Reset Position", 14, -908, 120, function()
+  MakeNativeButton(settingsFrame, "Reset Position", 14, -956, 120, function()
     ResetPosition()
     RequestRefresh()
     RefreshIfNeeded(true)
     RefreshSettingsWindow()
   end)
-  MakeNativeButton(settingsFrame, "Hide Overlay", 144, -908, 120, function()
+  MakeNativeButton(settingsFrame, "Hide Overlay", 144, -956, 120, function()
     SetBooleanOption("shown", false, true)
     RefreshSettingsWindow()
   end)
@@ -2058,6 +2069,8 @@ ShowContextMenu = function(anchor)
     { text = "Show pull numbers", checked = db.showPullNumbers, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showPullNumbers") end },
     { text = "Show pull outlines", checked = db.showPullOutlines, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showPullOutlines") end },
     { text = "Show route lines", checked = db.showRouteLines, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showRouteLines") end },
+    { text = "Show mob dots on map", checked = db.showEnemyDots, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showEnemyDots") end },
+    { text = "Include unpulled mob dots", checked = db.showUnpulledEnemies, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showUnpulledEnemies") end },
     { text = "Reset position", notCheckable = true, func = function() ResetPosition() RequestRefresh() RefreshIfNeeded(true) RefreshSettingsWindow() end },
   }
 
@@ -2171,14 +2184,12 @@ local function HandleSlash(input)
     Print("enemy icons are disabled in this build")
     RefreshIfNeeded(true)
   elseif command == "unpulled" then
-    db.showUnpulledEnemies = false
-    Print("mob dots are disabled in this build")
-    RefreshIfNeeded(true)
+    SetBooleanOption("showUnpulledEnemies", not db.showUnpulledEnemies, false)
+    Print(db.showUnpulledEnemies and "including unpulled mob dots" or "showing pulled mob dots only")
     RefreshSettingsWindow()
   elseif command == "dots" then
-    db.showEnemyDots = false
-    Print("mob dots are disabled in this build")
-    RefreshIfNeeded(true)
+    SetBooleanOption("showEnemyDots", not db.showEnemyDots, false)
+    Print(db.showEnemyDots and "mob dots shown on map" or "mob dots hidden")
     RefreshSettingsWindow()
   elseif command == "pois" then
     db.showPOIs = false
@@ -2258,7 +2269,7 @@ local function HandleSlash(input)
     ResetPosition()
     RefreshIfNeeded(true)
   else
-    Print("/mdtmini options | toggle | show | hide | lock | unlock | pull <number> | all | outlines | lines | numbers | frame | dungeon | sidebar | side | detach | sidebarlock | percent | size <width> | alpha <0.2-1> | iconalpha <0.2-1> | reset")
+    Print("/mdtmini options | toggle | show | hide | lock | unlock | pull <number> | all | outlines | lines | numbers | dots | unpulled | frame | dungeon | sidebar | side | detach | sidebarlock | percent | size <width> | alpha <0.2-1> | iconalpha <0.2-1> | reset")
   end
 end
 
@@ -2494,13 +2505,13 @@ local function Initialize()
   db.mapFontSize = Clamp(db.mapFontSize or DEFAULTS.mapFontSize, FONT_SIZE_MIN, FONT_SIZE_MAX)
   db.mapFontOutline = NormalizeOutline(db.mapFontOutline)
   db.mapFontShadow = db.mapFontShadow == true
+  db.showUnpulledEnemies = db.showUnpulledEnemies == true
+  db.showEnemyDots = db.showEnemyDots == true
   if type(db.dungeonLayouts) ~= "table" then
     db.dungeonLayouts = {}
   end
   db.showEnemies = false
   db.showEnemyPortraits = false
-  db.showUnpulledEnemies = false
-  db.showEnemyDots = false
   db.showPOIs = false
 
   CreateOverlay()
