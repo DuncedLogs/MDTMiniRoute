@@ -11,7 +11,6 @@ local REFRESH_INTERVAL = 0.35
 
 local CIRCLE_TEXTURE = "Interface\\AddOns\\MythicDungeonTools\\Textures\\Circle_White"
 local SQUARE_TEXTURE = "Interface\\AddOns\\MythicDungeonTools\\Textures\\Square_White"
-local MDT_ICON_TEXTURE = "Interface\\AddOns\\MythicDungeonTools\\Textures\\MDTMinimap"
 local POI_FALLBACK_TEXTURE = "Interface\\MINIMAP\\POIIcons"
 
 local DEFAULTS = {
@@ -57,7 +56,7 @@ local statusText
 local smallTiles = {}
 local largeTiles = {}
 local hooksInstalled
-local mdtSectionRegistered
+local mdtSettingsInjected
 local initialized
 local dirty = true
 local lastSignature
@@ -878,21 +877,6 @@ local function HookMDT()
   hooksInstalled = true
 end
 
-local function RefreshSettingsPage()
-  local MDT = GetMDT()
-  if MDT and MDT.main_frame and MDT.main_frame.miniRouteSettingsFrame then
-    MDT.main_frame.miniRouteSettingsFrame:ReleaseChildren()
-    MDT.main_frame.miniRouteSettingsFrame = nil
-  end
-  if MDT and MDT.main_frame and MDT.main_frame.miniRouteSidePanel then
-    MDT.main_frame.miniRouteSidePanel:ReleaseChildren()
-    MDT.main_frame.miniRouteSidePanel = nil
-  end
-  if MDT and MDT.main_frame and type(MDT.GetCurrentSection) == "function" and MDT:GetCurrentSection() == "miniRoute" then
-    if MDT.UpdateSectionVisibility then MDT:UpdateSectionVisibility() end
-  end
-end
-
 local function AddCheckbox(parent, label, key, callback)
   local AceGUI = LibStub and LibStub("AceGUI-3.0", true)
   if not AceGUI then return end
@@ -941,130 +925,74 @@ local function AddSlider(parent, label, minValue, maxValue, step, value, callbac
   return slider
 end
 
-local function BuildMDTSettingsPage()
+local function InjectMDTSettings()
+  if mdtSettingsInjected then return end
   local MDT = GetMDT()
   local AceGUI = LibStub and LibStub("AceGUI-3.0", true)
-  if not MDT or not AceGUI or not MDT.main_frame then return end
+  local mdtFrame = MDT and MDT.main_frame
+  local parent = mdtFrame and mdtFrame.settingsGeneralColumn
+  if not MDT or not AceGUI or not parent then return end
 
-  local contentParent = MDT.main_frame.sectionContentFrames and MDT.main_frame.sectionContentFrames.miniRoute
-  if contentParent and not MDT.main_frame.miniRouteSettingsFrame then
-    local group = AceGUI:Create("SimpleGroup")
-    group.frame:SetParent(contentParent)
-    group.frame:SetFrameStrata("HIGH")
-    group.frame:SetFrameLevel(contentParent:GetFrameLevel() + 2)
-    group:SetWidth(690)
-    group:SetHeight(470)
-    group:SetAutoAdjustHeight(false)
-    group:SetLayout("Flow")
-    group.settingWidth = 315
-    group.frame:ClearAllPoints()
-    group.frame:SetPoint("TOP", contentParent, "TOP", 0, -45)
-    group.frame:Show()
-    MDT.main_frame.miniRouteSettingsFrame = group
+  mdtSettingsInjected = true
 
-    local heading = AceGUI:Create("Heading")
-    heading:SetText("Mini Route")
-    heading:SetFullWidth(true)
-    group:AddChild(heading)
+  local heading = AceGUI:Create("Heading")
+  heading:SetText("Mini Route")
+  heading:SetFullWidth(true)
+  parent:AddChild(heading)
 
-    local label = AceGUI:Create("Label")
-    label:SetText("Mini Route is loaded as a separate MDT plugin. These options change only the overlay and do not edit MythicDungeonTools files.")
-    label:SetFullWidth(true)
-    group:AddChild(label)
+  local label = AceGUI:Create("Label")
+  label:SetText("Mini Route is loaded as a separate MDT plugin. These controls only affect the mini overlay.")
+  label:SetFullWidth(true)
+  parent:AddChild(label)
 
-    AddCheckbox(group, "Show mini route overlay", "shown", function(value)
-      if frame then
-        if value then frame:Show() else frame:Hide() end
-      end
-    end)
-    AddCheckbox(group, "Lock overlay position", "locked", function(value)
-      if frame then frame:SetMovable(not value) end
-    end)
-    AddCheckbox(group, "Show all pulls", "showAllPulls")
-    AddCheckbox(group, "Show pull numbers", "showPullNumbers")
-    AddCheckbox(group, "Show MDT-style pull outlines", "showPullOutlines")
-    AddCheckbox(group, "Show route connection lines", "showRouteLines")
-    AddCheckbox(group, "Show enemy icons", "showEnemies")
-    AddCheckbox(group, "Use enemy portraits", "showEnemyPortraits")
-    AddCheckbox(group, "Show unpulled enemies", "showUnpulledEnemies")
-    AddCheckbox(group, "Show tiny enemy dots instead of icons when icons are off", "showEnemyDots")
-    AddCheckbox(group, "Show POIs", "showPOIs")
+  AddCheckbox(parent, "Show mini route overlay", "shown", function(value)
+    if frame then
+      if value then frame:Show() else frame:Hide() end
+    end
+  end)
+  AddCheckbox(parent, "Lock overlay position", "locked", function(value)
+    if frame then frame:SetMovable(not value) end
+  end)
+  AddCheckbox(parent, "Show all pulls", "showAllPulls")
+  AddCheckbox(parent, "Show pull numbers", "showPullNumbers")
+  AddCheckbox(parent, "Show MDT-style pull outlines", "showPullOutlines")
+  AddCheckbox(parent, "Show route connection lines", "showRouteLines")
+  AddCheckbox(parent, "Show enemy icons", "showEnemies")
+  AddCheckbox(parent, "Use enemy portraits", "showEnemyPortraits")
+  AddCheckbox(parent, "Show unpulled enemies", "showUnpulledEnemies")
+  AddCheckbox(parent, "Show tiny enemy dots when icons are off", "showEnemyDots")
+  AddCheckbox(parent, "Show POIs", "showPOIs")
 
-    AddSlider(group, "Overlay width", MIN_WIDTH, MAX_WIDTH, 1, db.width, function(value)
-      ApplySize(value)
-      SavePosition()
-    end)
-    AddSlider(group, "Overlay alpha", 0.2, 1, 0.05, db.alpha, function(value)
-      db.alpha = Clamp(value, 0.2, 1)
-      if frame then frame:SetAlpha(db.alpha) end
-    end)
+  AddSlider(parent, "Mini Route width", MIN_WIDTH, MAX_WIDTH, 1, db.width, function(value)
+    ApplySize(value)
+    SavePosition()
+  end)
+  AddSlider(parent, "Mini Route alpha", 0.2, 1, 0.05, db.alpha, function(value)
+    db.alpha = Clamp(value, 0.2, 1)
+    if frame then frame:SetAlpha(db.alpha) end
+  end)
 
-    AddButton(group, "Reset Position", function()
-      ResetPosition()
-      RefreshSettingsPage()
-    end)
-  end
+  AddButton(parent, "Reset Mini Route Position", function()
+    ResetPosition()
+    RequestRefresh()
+    RefreshIfNeeded(true)
+  end)
 
-  local sideParent = MDT.main_frame.sectionSidePanelFrames and MDT.main_frame.sectionSidePanelFrames.miniRoute
-  if sideParent and not MDT.main_frame.miniRouteSidePanel then
-    local side = AceGUI:Create("SimpleGroup")
-    side.frame:SetParent(sideParent)
-    side.frame:SetFrameStrata("HIGH")
-    side.frame:SetFrameLevel(sideParent:GetFrameLevel() + 1)
-    side:SetWidth(218)
-    side:SetHeight(420)
-    side:SetLayout("Flow")
-    side.settingWidth = 200
-    side.frame:ClearAllPoints()
-    side.frame:SetPoint("TOP", sideParent, "TOP", 0, -38)
-    side.frame:Show()
-    MDT.main_frame.miniRouteSidePanel = side
-
-    local sideHeading = AceGUI:Create("Heading")
-    sideHeading:SetText("Mini Route")
-    sideHeading:SetFullWidth(true)
-    side:AddChild(sideHeading)
-
-    AddButton(side, db.shown and "Hide Overlay" or "Show Overlay", function()
-      ToggleShown()
-      RefreshSettingsPage()
-    end)
-    AddButton(side, db.locked and "Unlock Overlay" or "Lock Overlay", function()
-      SetLocked(not db.locked)
-      RefreshSettingsPage()
-    end)
-    AddButton(side, "Refresh Overlay", function()
-      RequestRefresh()
-      RefreshIfNeeded(true)
-    end)
-    AddButton(side, "Reset Position", function()
-      ResetPosition()
-      RequestRefresh()
-      RefreshIfNeeded(true)
-    end)
-  end
+  if parent.DoLayout then parent:DoLayout() end
+  if MDT.Settings_RefreshLayout then MDT:Settings_RefreshLayout() end
 end
 
-local function RegisterMDTSection()
-  if mdtSectionRegistered then return end
+local function QueueMDTSettingsInjection()
   local MDT = GetMDT()
-  if not MDT or type(MDT.RegisterNavigationSection) ~= "function" then return end
-  if MDT.GetNavigationSection and MDT:GetNavigationSection("miniRoute") then
-    mdtSectionRegistered = true
-    return
+  if not MDT then return end
+
+  if MDT.main_frame and MDT.main_frame.settingsGeneralColumn then
+    pcall(InjectMDTSettings)
+  elseif type(MDT.RunAfterFramesInitialized) == "function" then
+    MDT:RunAfterFramesInitialized(function()
+      pcall(InjectMDTSettings)
+    end)
   end
-
-  MDT:RegisterNavigationSection({
-    key = "miniRoute",
-    tooltip = "Mini Route",
-    texture = MDT_ICON_TEXTURE,
-    texCoords = { 0, 1, 0, 1 },
-    iconSize = 27,
-    iconOffsetY = 0,
-    onShow = BuildMDTSettingsPage,
-  })
-
-  mdtSectionRegistered = true
 end
 
 ResetPosition = function()
@@ -1292,9 +1220,9 @@ local function Initialize()
   db.width = Clamp(db.width, MIN_WIDTH, MAX_WIDTH)
   db.alpha = Clamp(db.alpha, 0.2, 1)
 
-  RegisterMDTSection()
   CreateOverlay()
   HookMDT()
+  QueueMDTSettingsInjection()
 
   SLASH_MDTMINIROUTE1 = "/mdtmini"
   SLASH_MDTMINIROUTE2 = "/mdtroute"
@@ -1311,7 +1239,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
     Initialize()
   elseif event == "PLAYER_LOGIN" then
     Initialize()
-    RegisterMDTSection()
+    QueueMDTSettingsInjection()
     HookMDT()
     RequestRefresh()
     RefreshIfNeeded(true)
