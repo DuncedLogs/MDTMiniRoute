@@ -2,8 +2,8 @@
 # WOW_INTERFACE_TARGETS: mainline-beta, mainline-test, mainline, mists
 ## Title: Mythic Dungeon Tools: Mini Route
 ## Author: Dunced/Codex
-## Version: 0.2.8
-## Notes: Movable mini-map overlay, clickable pull sidebar, mob dots, clean frame mode, dungeon-only layouts, and floating options for the current Mythic Dungeon Tools route.
+## Version: 0.2.9
+## Notes: Movable mini-map overlay, configurable clickable pull sidebar, clean frame mode, dungeon-only layouts, and floating options for the current Mythic Dungeon Tools route.
 ## Dependencies: MythicDungeonTools
 ## RequiredDeps: MythicDungeonTools
 ## SavedVariables: MDTMiniRouteDB
