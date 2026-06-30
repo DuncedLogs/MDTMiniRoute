@@ -6,6 +6,7 @@ local MAP_HEIGHT = 555
 local HEADER_HEIGHT = 22
 local PADDING = 4
 local SIDEBAR_SPACING = 4
+local SIDEBAR_HEADER_HEIGHT = 24
 local SIDEBAR_DEFAULT_WIDTH = 96
 local SIDEBAR_MIN_WIDTH = 42
 local SIDEBAR_MAX_WIDTH = 260
@@ -84,6 +85,7 @@ local mapViewport
 local mapBg
 local canvas
 local pullSidebar
+local pullSidebarShowAllButton
 local pullSidebarScroll
 local pullSidebarContent
 local statusText
@@ -111,7 +113,7 @@ local pullSidebarRows = {}
 local ResetPosition, ToggleShown, SetLocked, ShowSettingsWindow, ShowContextMenu
 local SaveActiveDungeonLayout, UpdateOverlayVisibility
 local ApplySize, RefreshIfNeeded, RefreshSettingsWindow
-local SelectPull, UpdatePullSidebar
+local SelectPull, UpdatePullSidebar, LayoutPullSidebar, UpdatePullSidebarHeader
 
 local function Print(msg)
   DEFAULT_CHAT_FRAME:AddMessage("|cff66ccffMDT Mini Route:|r "..msg)
@@ -247,6 +249,7 @@ local function ApplyFrameArtwork()
     pullSidebar:ClearAllPoints()
     if sidebarWidth > 0 then
       pullSidebar:SetSize(sidebarWidth, sidebarHeight)
+      LayoutPullSidebar()
       if db.pullSidebarDetached then
         pullSidebar:SetParent(UIParent)
         pullSidebar:SetPoint(db.pullSidebarPoint or DEFAULTS.pullSidebarPoint, UIParent, db.pullSidebarRelativePoint or DEFAULTS.pullSidebarRelativePoint, db.pullSidebarX or DEFAULTS.pullSidebarX, db.pullSidebarY or DEFAULTS.pullSidebarY)
@@ -717,6 +720,41 @@ end
 
 local function GetPullSidebarRowHeight()
   return math.max(18, math.floor(24 * Clamp(db and db.pullSidebarScale or 1, SIDEBAR_MIN_SCALE, SIDEBAR_MAX_SCALE) + 0.5))
+end
+
+local function GetPullSidebarHeaderHeight()
+  return math.max(20, math.floor(SIDEBAR_HEADER_HEIGHT * Clamp(db and db.pullSidebarScale or 1, SIDEBAR_MIN_SCALE, SIDEBAR_MAX_SCALE) + 0.5))
+end
+
+UpdatePullSidebarHeader = function()
+  if not pullSidebarShowAllButton or not db then return end
+
+  local active = db.showAllPulls == true
+  local scale = Clamp(db.pullSidebarScale or 1, SIDEBAR_MIN_SCALE, SIDEBAR_MAX_SCALE)
+  pullSidebarShowAllButton:SetBackdropColor(active and 0.08 or 0.025, active and 0.22 or 0.03, active and 0.34 or 0.045, active and 0.92 or 0.86)
+  pullSidebarShowAllButton:SetBackdropBorderColor(active and 0.2 or 0, active and 0.82 or 0, active and 1 or 0, active and 0.95 or 0.65)
+  if pullSidebarShowAllButton.text then
+    pullSidebarShowAllButton.text:SetText("All Pulls")
+    pullSidebarShowAllButton.text:SetTextColor(active and 1 or 0.75, active and 0.9 or 0.78, active and 0.15 or 0.85, 1)
+    pullSidebarShowAllButton.text:SetFont(pullSidebarShowAllButton.text:GetFont(), math.max(11, math.floor(12 * scale + 0.5)), "OUTLINE")
+  end
+end
+
+LayoutPullSidebar = function()
+  if not pullSidebar or not pullSidebarScroll then return end
+
+  local headerHeight = GetPullSidebarHeaderHeight()
+  if pullSidebarShowAllButton then
+    pullSidebarShowAllButton:ClearAllPoints()
+    pullSidebarShowAllButton:SetPoint("TOPLEFT", pullSidebar, "TOPLEFT", 2, -2)
+    pullSidebarShowAllButton:SetPoint("TOPRIGHT", pullSidebar, "TOPRIGHT", -2, -2)
+    pullSidebarShowAllButton:SetHeight(math.max(18, headerHeight - 3))
+  end
+
+  pullSidebarScroll:ClearAllPoints()
+  pullSidebarScroll:SetPoint("TOPLEFT", pullSidebar, "TOPLEFT", 2, -(headerHeight + 2))
+  pullSidebarScroll:SetPoint("BOTTOMRIGHT", pullSidebar, "BOTTOMRIGHT", -2, 2)
+  UpdatePullSidebarHeader()
 end
 
 local function IsCloneIncluded(MDT, enemyIdx, cloneIdx)
@@ -1471,6 +1509,10 @@ local function SetBooleanOption(key, value, silent)
   elseif key == "showFrameArtwork" or key == "showPullSidebar" or key == "showPullPercent" or key == "pullSidebarOnLeft" or key == "pullSidebarDetached" then
     ApplySize(db.width)
     RefreshIfNeeded(true)
+  elseif key == "showAllPulls" then
+    UpdatePullSidebarHeader()
+    RequestRefresh()
+    RefreshIfNeeded(true)
   else
     RequestRefresh()
     RefreshIfNeeded(true)
@@ -1503,6 +1545,9 @@ RefreshSettingsWindow = function()
   end
   if settingsControls.sidebarScaleSlider then
     settingsControls.sidebarScaleSlider:SetValue(db.pullSidebarScale or DEFAULTS.pullSidebarScale)
+  end
+  if UpdatePullSidebarHeader then
+    UpdatePullSidebarHeader()
   end
   settingsUpdating = false
 end
@@ -1841,6 +1886,7 @@ local function HandleSlash(input)
   elseif command == "all" then
     db.showAllPulls = not db.showAllPulls
     Print(db.showAllPulls and "showing all pulls" or "showing selected pull only")
+    UpdatePullSidebarHeader()
     RefreshIfNeeded(true)
   elseif command == "enemies" then
     db.showEnemies = false
@@ -2056,9 +2102,30 @@ local function CreateOverlay()
     ScrollPullSidebar(delta)
   end)
 
+  pullSidebarShowAllButton = CreateFrame("Button", nil, pullSidebar, "BackdropTemplate")
+  pullSidebarShowAllButton:SetBackdrop({
+    bgFile = "Interface\\Buttons\\WHITE8X8",
+    edgeFile = "Interface\\Buttons\\WHITE8X8",
+    edgeSize = 1,
+  })
+  pullSidebarShowAllButton:EnableMouse(true)
+  pullSidebarShowAllButton:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+  pullSidebarShowAllButton.text = pullSidebarShowAllButton:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  pullSidebarShowAllButton.text:SetPoint("CENTER", pullSidebarShowAllButton, "CENTER", 0, 0)
+  pullSidebarShowAllButton.text:SetJustifyH("CENTER")
+  pullSidebarShowAllButton:SetScript("OnClick", function(self, button)
+    if button == "RightButton" then
+      ShowContextMenu(self)
+      return
+    end
+    SetBooleanOption("showAllPulls", not db.showAllPulls, false)
+    RefreshSettingsWindow()
+  end)
+  pullSidebarShowAllButton:SetScript("OnMouseWheel", function(_, delta)
+    ScrollPullSidebar(delta)
+  end)
+
   pullSidebarScroll = CreateFrame("ScrollFrame", nil, pullSidebar)
-  pullSidebarScroll:SetPoint("TOPLEFT", pullSidebar, "TOPLEFT", 2, -2)
-  pullSidebarScroll:SetPoint("BOTTOMRIGHT", pullSidebar, "BOTTOMRIGHT", -2, 2)
   pullSidebarScroll:EnableMouseWheel(true)
   pullSidebarScroll:SetScript("OnMouseWheel", function(_, delta)
     ScrollPullSidebar(delta)
@@ -2067,6 +2134,7 @@ local function CreateOverlay()
   pullSidebarContent = CreateFrame("Frame", nil, pullSidebarScroll)
   pullSidebarContent:SetPoint("TOPLEFT", pullSidebarScroll, "TOPLEFT", 0, 0)
   pullSidebarScroll:SetScrollChild(pullSidebarContent)
+  LayoutPullSidebar()
 
   canvas = CreateFrame("Frame", nil, mapViewport)
   mapViewport:SetScrollChild(canvas)
