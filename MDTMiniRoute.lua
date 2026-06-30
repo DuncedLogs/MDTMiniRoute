@@ -1614,7 +1614,7 @@ local function CreateSettingsWindow()
   settingsFrame:SetMovable(true)
   settingsFrame:EnableMouse(true)
   settingsFrame:RegisterForDrag("LeftButton")
-  settingsFrame:SetSize(330, 536)
+  settingsFrame:SetSize(330, 584)
   settingsFrame:SetBackdrop({
     bgFile = "Interface\\Buttons\\WHITE8X8",
     edgeFile = "Interface\\Buttons\\WHITE8X8",
@@ -1661,34 +1661,36 @@ local function CreateSettingsWindow()
   MakeNativeCheck(settingsFrame, "Show pull numbers on map", "showPullNumbers", 14, -254)
   MakeNativeCheck(settingsFrame, "Show MDT-style pull outlines", "showPullOutlines", 14, -278)
   MakeNativeCheck(settingsFrame, "Show route connection lines", "showRouteLines", 14, -302)
+  MakeNativeCheck(settingsFrame, "Show mob dots on map", "showEnemyDots", 14, -326)
+  MakeNativeCheck(settingsFrame, "Include unpulled mob dots", "showUnpulledEnemies", 14, -350)
 
-  settingsControls.widthSlider = MakeNativeSlider(settingsFrame, "Overlay width", MIN_WIDTH, MAX_WIDTH, 1, 22, -348, function(value)
+  settingsControls.widthSlider = MakeNativeSlider(settingsFrame, "Overlay width", MIN_WIDTH, MAX_WIDTH, 1, 22, -396, function(value)
     ApplySize(value)
     SavePosition()
     RequestRefresh()
     RefreshIfNeeded(true)
   end)
 
-  settingsControls.alphaSlider = MakeNativeSlider(settingsFrame, "Map alpha", 0.2, 1, 0.05, 22, -402, function(value)
+  settingsControls.alphaSlider = MakeNativeSlider(settingsFrame, "Map alpha", 0.2, 1, 0.05, 22, -450, function(value)
     db.alpha = Clamp(value, 0.2, 1)
     ApplyMapAlpha()
     SaveActiveDungeonLayout()
   end)
 
-  settingsControls.iconAlphaSlider = MakeNativeSlider(settingsFrame, "Icon alpha", 0.2, 1, 0.05, 22, -456, function(value)
+  settingsControls.iconAlphaSlider = MakeNativeSlider(settingsFrame, "Icon alpha", 0.2, 1, 0.05, 22, -504, function(value)
     db.iconAlpha = Clamp(value, 0.2, 1)
     SaveActiveDungeonLayout()
     RequestRefresh()
     RefreshIfNeeded(true)
   end)
 
-  MakeNativeButton(settingsFrame, "Reset Position", 14, -498, 120, function()
+  MakeNativeButton(settingsFrame, "Reset Position", 14, -546, 120, function()
     ResetPosition()
     RequestRefresh()
     RefreshIfNeeded(true)
     RefreshSettingsWindow()
   end)
-  MakeNativeButton(settingsFrame, "Hide Overlay", 144, -498, 120, function()
+  MakeNativeButton(settingsFrame, "Hide Overlay", 144, -546, 120, function()
     SetBooleanOption("shown", false, true)
     RefreshSettingsWindow()
   end)
@@ -1733,6 +1735,8 @@ ShowContextMenu = function(anchor)
     { text = "Show pull numbers", checked = db.showPullNumbers, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showPullNumbers") end },
     { text = "Show pull outlines", checked = db.showPullOutlines, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showPullOutlines") end },
     { text = "Show route lines", checked = db.showRouteLines, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showRouteLines") end },
+    { text = "Show mob dots", checked = db.showEnemyDots, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showEnemyDots") end },
+    { text = "Include unpulled mob dots", checked = db.showUnpulledEnemies, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showUnpulledEnemies") end },
     { text = "Reset position", notCheckable = true, func = function() ResetPosition() RequestRefresh() RefreshIfNeeded(true) RefreshSettingsWindow() end },
   }
 
@@ -1830,16 +1834,18 @@ local function HandleSlash(input)
     RefreshIfNeeded(true)
   elseif command == "enemies" then
     db.showEnemies = false
-    Print("enemy icons are disabled in this build")
+    Print("enemy icons are disabled; use /mdtmini dots for lightweight mob dots")
     RefreshIfNeeded(true)
   elseif command == "unpulled" then
-    db.showUnpulledEnemies = false
-    Print("unpulled enemy display is disabled in this build")
+    db.showUnpulledEnemies = not db.showUnpulledEnemies
+    Print(db.showUnpulledEnemies and "unpulled mob dots included" or "unpulled mob dots hidden")
     RefreshIfNeeded(true)
+    RefreshSettingsWindow()
   elseif command == "dots" then
-    db.showEnemyDots = false
-    Print("enemy dots are disabled in this build")
+    db.showEnemyDots = not db.showEnemyDots
+    Print(db.showEnemyDots and "mob dots on" or "mob dots off")
     RefreshIfNeeded(true)
+    RefreshSettingsWindow()
   elseif command == "pois" then
     db.showPOIs = false
     Print("POIs are disabled in this build")
@@ -1910,7 +1916,7 @@ local function HandleSlash(input)
     ResetPosition()
     RefreshIfNeeded(true)
   else
-    Print("/mdtmini options | toggle | show | hide | lock | unlock | pull <number> | all | outlines | lines | numbers | frame | dungeon | sidebar | compact | percent | size <width> | alpha <0.2-1> | iconalpha <0.2-1> | reset")
+    Print("/mdtmini options | toggle | show | hide | lock | unlock | pull <number> | all | dots | unpulled | outlines | lines | numbers | frame | dungeon | sidebar | compact | percent | size <width> | alpha <0.2-1> | iconalpha <0.2-1> | reset")
   end
 end
 
@@ -2086,8 +2092,8 @@ local function Initialize()
   end
   db.showEnemies = false
   db.showEnemyPortraits = false
-  db.showUnpulledEnemies = false
-  db.showEnemyDots = false
+  db.showUnpulledEnemies = db.showUnpulledEnemies == true
+  db.showEnemyDots = db.showEnemyDots == true
   db.showPOIs = false
 
   CreateOverlay()
