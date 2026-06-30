@@ -25,12 +25,17 @@ local DEFAULTS = {
   showPullOutlines = true,
   showPullNumbers = true,
   showRouteLines = false,
+  openSettingsWithMDT = true,
   alpha = 0.95,
   width = 348,
   point = "BOTTOMLEFT",
   relativePoint = "BOTTOMLEFT",
   x = 32,
   y = 245,
+  settingsPoint = "CENTER",
+  settingsRelativePoint = "CENTER",
+  settingsX = 430,
+  settingsY = 0,
 }
 
 local FALLBACK_COLORS = {
@@ -53,6 +58,10 @@ local titleText
 local mapViewport
 local canvas
 local statusText
+local settingsFrame
+local settingsControls = {}
+local contextMenuFrame
+local monitorFrame
 local smallTiles = {}
 local largeTiles = {}
 local hooksInstalled
@@ -61,10 +70,14 @@ local initialized
 local dirty = true
 local lastSignature
 local elapsedSinceRefresh = 0
+local monitorElapsed = 0
+local settingsUpdating
+local settingsOpenedWithMDT
+local lastMDTShown
 
 local linePool, markerPool, dotPool, enemyPool, poiPool = {}, {}, {}, {}, {}
 local usedLines, usedMarkers, usedDots, usedEnemies, usedPOIs = 0, 0, 0, 0, 0
-local ResetPosition, ToggleShown, SetLocked
+local ResetPosition, ToggleShown, SetLocked, ShowSettingsWindow, ShowContextMenu
 
 local function Print(msg)
   DEFAULT_CHAT_FRAME:AddMessage("|cff66ccffMDT Mini Route:|r "..msg)
@@ -1007,6 +1020,297 @@ local function QueueMDTSettingsInjectionDisabled()
   end
 end
 
+local nativeControlIndex = 0
+
+local function NextControlName(prefix)
+  nativeControlIndex = nativeControlIndex + 1
+  return "MDTMiniRoute"..prefix..nativeControlIndex
+end
+
+local function ControlText(control)
+  return control.Text or (control.GetName and _G[control:GetName().."Text"])
+end
+
+local function SetControlText(control, text)
+  local fontString = ControlText(control)
+  if fontString then
+    fontString:SetText(text)
+  end
+end
+
+local function SaveSettingsPosition()
+  if not settingsFrame or not db then return end
+
+  local point, _, relativePoint, x, y = settingsFrame:GetPoint(1)
+  db.settingsPoint = point or DEFAULTS.settingsPoint
+  db.settingsRelativePoint = relativePoint or DEFAULTS.settingsRelativePoint
+  db.settingsX = x or DEFAULTS.settingsX
+  db.settingsY = y or DEFAULTS.settingsY
+end
+
+local function SetBooleanOption(key, value, silent)
+  if not db then return end
+
+  db[key] = value == true
+  if key == "shown" then
+    if frame then
+      if db.shown then
+        frame:Show()
+        RefreshIfNeeded(true)
+      else
+        frame:Hide()
+      end
+    end
+  elseif key == "locked" then
+    if SetLocked then
+      SetLocked(db.locked, silent)
+    end
+  elseif key ~= "openSettingsWithMDT" then
+    RequestRefresh()
+    RefreshIfNeeded(true)
+  end
+end
+
+local function RefreshSettingsWindow()
+  if not settingsFrame or not db then return end
+
+  settingsUpdating = true
+  if settingsControls.checks then
+    for key, check in pairs(settingsControls.checks) do
+      check:SetChecked(db[key] == true)
+    end
+  end
+  if settingsControls.widthSlider then
+    settingsControls.widthSlider:SetValue(db.width or DEFAULTS.width)
+  end
+  if settingsControls.alphaSlider then
+    settingsControls.alphaSlider:SetValue(db.alpha or DEFAULTS.alpha)
+  end
+  settingsUpdating = false
+end
+
+local function MakeNativeCheck(parent, label, key, x, y)
+  settingsControls.checks = settingsControls.checks or {}
+
+  local check = CreateFrame("CheckButton", NextControlName("Check"), parent, "UICheckButtonTemplate")
+  check:SetPoint("TOPLEFT", parent, "TOPLEFT", x, y)
+  SetControlText(check, label)
+  check:SetScript("OnClick", function(button)
+    if settingsUpdating then return end
+    SetBooleanOption(key, button:GetChecked() == true, true)
+    RefreshSettingsWindow()
+  end)
+  settingsControls.checks[key] = check
+  return check
+end
+
+local function MakeNativeButton(parent, text, x, y, width, callback)
+  local button = CreateFrame("Button", NextControlName("Button"), parent, "UIPanelButtonTemplate")
+  button:SetPoint("TOPLEFT", parent, "TOPLEFT", x, y)
+  button:SetSize(width or 120, 24)
+  button:SetText(text)
+  button:SetScript("OnClick", callback)
+  return button
+end
+
+local function FormatSliderValue(value, step)
+  if step and step < 1 then
+    return string.format("%.2f", value)
+  end
+  return tostring(math.floor((value or 0) + 0.5))
+end
+
+local function MakeNativeSlider(parent, label, minValue, maxValue, step, x, y, callback)
+  local slider = CreateFrame("Slider", NextControlName("Slider"), parent, "OptionsSliderTemplate")
+  slider:SetPoint("TOPLEFT", parent, "TOPLEFT", x, y)
+  slider:SetWidth(230)
+  slider:SetMinMaxValues(minValue, maxValue)
+  slider:SetValueStep(step)
+  if slider.SetObeyStepOnDrag then
+    slider:SetObeyStepOnDrag(true)
+  end
+
+  local name = slider:GetName()
+  _G[name.."Text"]:SetText(label)
+  _G[name.."Low"]:SetText(tostring(minValue))
+  _G[name.."High"]:SetText(tostring(maxValue))
+
+  slider.valueText = parent:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+  slider.valueText:SetPoint("LEFT", slider, "RIGHT", 12, 0)
+
+  slider:SetScript("OnValueChanged", function(control, value)
+    if step >= 1 then
+      value = math.floor(value + 0.5)
+    end
+    control.valueText:SetText(FormatSliderValue(value, step))
+    if settingsUpdating then return end
+    callback(value)
+    RefreshSettingsWindow()
+  end)
+
+  return slider
+end
+
+local function CreateSettingsWindow()
+  if settingsFrame then return end
+
+  settingsFrame = CreateFrame("Frame", "MDTMiniRouteSettingsFrame", UIParent, "BackdropTemplate")
+  settingsFrame:SetFrameStrata("DIALOG")
+  settingsFrame:SetClampedToScreen(true)
+  settingsFrame:SetMovable(true)
+  settingsFrame:EnableMouse(true)
+  settingsFrame:RegisterForDrag("LeftButton")
+  settingsFrame:SetSize(330, 500)
+  settingsFrame:SetBackdrop({
+    bgFile = "Interface\\Buttons\\WHITE8X8",
+    edgeFile = "Interface\\Buttons\\WHITE8X8",
+    edgeSize = 1,
+  })
+  settingsFrame:SetBackdropColor(0.025, 0.03, 0.04, 0.94)
+  settingsFrame:SetBackdropBorderColor(0, 0, 0, 0.95)
+  settingsFrame:SetPoint(db.settingsPoint or DEFAULTS.settingsPoint, UIParent, db.settingsRelativePoint or DEFAULTS.settingsRelativePoint, db.settingsX or DEFAULTS.settingsX, db.settingsY or DEFAULTS.settingsY)
+  settingsFrame:Hide()
+
+  settingsFrame:SetScript("OnDragStart", function(self)
+    self:StartMoving()
+  end)
+  settingsFrame:SetScript("OnDragStop", function(self)
+    self:StopMovingOrSizing()
+    SaveSettingsPosition()
+  end)
+
+  local header = settingsFrame:CreateTexture(nil, "BACKGROUND")
+  header:SetPoint("TOPLEFT", settingsFrame, "TOPLEFT", 1, -1)
+  header:SetPoint("TOPRIGHT", settingsFrame, "TOPRIGHT", -1, -1)
+  header:SetHeight(28)
+  header:SetColorTexture(0.035, 0.045, 0.06, 0.96)
+
+  local title = settingsFrame:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+  title:SetPoint("LEFT", settingsFrame, "TOPLEFT", 12, -15)
+  title:SetText("Mini Route Options")
+
+  local close = CreateFrame("Button", nil, settingsFrame, "UIPanelCloseButton")
+  close:SetPoint("TOPRIGHT", settingsFrame, "TOPRIGHT", 2, 2)
+  close:SetScript("OnClick", function()
+    settingsOpenedWithMDT = false
+    settingsFrame:Hide()
+  end)
+
+  MakeNativeCheck(settingsFrame, "Show mini route overlay", "shown", 14, -42)
+  MakeNativeCheck(settingsFrame, "Open options with MDT", "openSettingsWithMDT", 14, -66)
+  MakeNativeCheck(settingsFrame, "Lock overlay position", "locked", 14, -90)
+  MakeNativeCheck(settingsFrame, "Show all pulls", "showAllPulls", 14, -124)
+  MakeNativeCheck(settingsFrame, "Show pull numbers", "showPullNumbers", 14, -148)
+  MakeNativeCheck(settingsFrame, "Show MDT-style pull outlines", "showPullOutlines", 14, -172)
+  MakeNativeCheck(settingsFrame, "Show route connection lines", "showRouteLines", 14, -196)
+  MakeNativeCheck(settingsFrame, "Show enemy icons", "showEnemies", 14, -230)
+  MakeNativeCheck(settingsFrame, "Use enemy portraits", "showEnemyPortraits", 14, -254)
+  MakeNativeCheck(settingsFrame, "Show unpulled enemies", "showUnpulledEnemies", 14, -278)
+  MakeNativeCheck(settingsFrame, "Show tiny enemy dots", "showEnemyDots", 14, -302)
+  MakeNativeCheck(settingsFrame, "Show POIs", "showPOIs", 14, -326)
+
+  settingsControls.widthSlider = MakeNativeSlider(settingsFrame, "Overlay width", MIN_WIDTH, MAX_WIDTH, 1, 22, -372, function(value)
+    ApplySize(value)
+    SavePosition()
+    RequestRefresh()
+    RefreshIfNeeded(true)
+  end)
+
+  settingsControls.alphaSlider = MakeNativeSlider(settingsFrame, "Overlay alpha", 0.2, 1, 0.05, 22, -426, function(value)
+    db.alpha = Clamp(value, 0.2, 1)
+    if frame then
+      frame:SetAlpha(db.alpha)
+    end
+  end)
+
+  MakeNativeButton(settingsFrame, "Reset Position", 14, -468, 120, function()
+    ResetPosition()
+    RequestRefresh()
+    RefreshIfNeeded(true)
+    RefreshSettingsWindow()
+  end)
+  MakeNativeButton(settingsFrame, "Hide Overlay", 144, -468, 120, function()
+    SetBooleanOption("shown", false, true)
+    RefreshSettingsWindow()
+  end)
+end
+
+ShowSettingsWindow = function(autoOpened)
+  if not db then return end
+
+  CreateSettingsWindow()
+  RefreshSettingsWindow()
+  if not settingsFrame:IsShown() then
+    settingsOpenedWithMDT = autoOpened == true
+  elseif not autoOpened then
+    settingsOpenedWithMDT = false
+  end
+  settingsFrame:Show()
+end
+
+local function ToggleMenuOption(key)
+  SetBooleanOption(key, not db[key], false)
+  RefreshSettingsWindow()
+end
+
+ShowContextMenu = function(anchor)
+  if not db then return end
+
+  if not contextMenuFrame then
+    contextMenuFrame = CreateFrame("Frame", "MDTMiniRouteContextMenu", UIParent, "UIDropDownMenuTemplate")
+  end
+
+  local menu = {
+    { text = TITLE, isTitle = true, notCheckable = true },
+    { text = "Options", notCheckable = true, func = function() ShowSettingsWindow(false) end },
+    { text = db.shown and "Hide overlay" or "Show overlay", notCheckable = true, func = ToggleShown },
+    { text = db.locked and "Unlock overlay" or "Lock overlay", notCheckable = true, func = function() SetLocked(not db.locked) RefreshSettingsWindow() end },
+    { text = "Show all pulls", checked = db.showAllPulls, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showAllPulls") end },
+    { text = "Show pull numbers", checked = db.showPullNumbers, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showPullNumbers") end },
+    { text = "Show pull outlines", checked = db.showPullOutlines, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showPullOutlines") end },
+    { text = "Show route lines", checked = db.showRouteLines, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showRouteLines") end },
+    { text = "Show enemy icons", checked = db.showEnemies, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showEnemies") end },
+    { text = "Show unpulled enemies", checked = db.showUnpulledEnemies, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showUnpulledEnemies") end },
+    { text = "Show POIs", checked = db.showPOIs, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showPOIs") end },
+    { text = "Reset position", notCheckable = true, func = function() ResetPosition() RequestRefresh() RefreshIfNeeded(true) RefreshSettingsWindow() end },
+  }
+
+  if EasyMenu then
+    EasyMenu(menu, contextMenuFrame, anchor or "cursor", 0, 0, "MENU", 2)
+  else
+    ShowSettingsWindow(false)
+  end
+end
+
+local function CreateMDTMonitor()
+  if monitorFrame then return end
+
+  lastMDTShown = false
+  monitorFrame = CreateFrame("Frame")
+  monitorFrame:SetScript("OnUpdate", function(_, elapsed)
+    if not db then return end
+
+    monitorElapsed = monitorElapsed + elapsed
+    if monitorElapsed < 0.25 then return end
+    monitorElapsed = 0
+
+    local MDT = GetMDT()
+    local mdtShown = MDT and MDT.main_frame and MDT.main_frame:IsShown() == true
+    if not db.openSettingsWithMDT then
+      lastMDTShown = mdtShown
+      return
+    end
+
+    if mdtShown and not lastMDTShown then
+      ShowSettingsWindow(true)
+    elseif not mdtShown and lastMDTShown and settingsOpenedWithMDT and settingsFrame then
+      settingsFrame:Hide()
+      settingsOpenedWithMDT = false
+    end
+    lastMDTShown = mdtShown
+  end)
+end
+
 ResetPosition = function()
   if not frame or not db then return end
   db.point = DEFAULTS.point
@@ -1030,14 +1334,16 @@ ToggleShown = function()
   Print(db.shown and "shown" or "hidden")
 end
 
-SetLocked = function(locked)
+SetLocked = function(locked, silent)
   db.locked = locked
   if db.locked then
     frame:SetMovable(false)
   else
     frame:SetMovable(true)
   end
-  Print(db.locked and "locked" or "unlocked")
+  if not silent then
+    Print(db.locked and "locked" or "unlocked")
+  end
 end
 
 local function HandleSlash(input)
@@ -1046,6 +1352,8 @@ local function HandleSlash(input)
 
   if command == "" or command == "toggle" then
     ToggleShown()
+  elseif command == "options" or command == "settings" or command == "config" then
+    ShowSettingsWindow(false)
   elseif command == "show" then
     db.shown = true
     frame:Show()
@@ -1111,7 +1419,7 @@ local function HandleSlash(input)
     ResetPosition()
     RefreshIfNeeded(true)
   else
-    Print("/mdtmini toggle | show | hide | lock | unlock | all | enemies | unpulled | dots | pois | outlines | lines | numbers | size <width> | alpha <0.2-1> | reset")
+    Print("/mdtmini options | toggle | show | hide | lock | unlock | all | enemies | unpulled | dots | pois | outlines | lines | numbers | size <width> | alpha <0.2-1> | reset")
   end
 end
 
@@ -1142,12 +1450,14 @@ local function CreateOverlay()
     if button == "LeftButton" and not db.locked then
       frame:StartMoving()
     elseif button == "RightButton" then
-      ToggleShown()
+      ShowContextMenu(header)
     end
   end)
-  header:SetScript("OnMouseUp", function()
-    frame:StopMovingOrSizing()
-    SavePosition()
+  header:SetScript("OnMouseUp", function(_, button)
+    if button == "LeftButton" then
+      frame:StopMovingOrSizing()
+      SavePosition()
+    end
   end)
   header:SetScript("OnMouseWheel", function(_, delta)
     local step = IsShiftKeyDown() and 8 or 24
@@ -1173,6 +1483,12 @@ local function CreateOverlay()
   close:SetPushedTexture("Interface\\Buttons\\UI-Panel-MinimizeButton-Down")
   close:SetHighlightTexture("Interface\\Buttons\\UI-Panel-MinimizeButton-Highlight")
   close:SetScript("OnClick", ToggleShown)
+
+  frame:SetScript("OnMouseUp", function(_, button)
+    if button == "RightButton" then
+      ShowContextMenu(frame)
+    end
+  end)
 
   mapViewport = CreateFrame("ScrollFrame", nil, frame)
   mapViewport:EnableMouse(false)
@@ -1233,6 +1549,7 @@ local function Initialize()
   db.alpha = Clamp(db.alpha, 0.2, 1)
 
   CreateOverlay()
+  CreateMDTMonitor()
   HookMDT()
   QueueMDTSettingsInjection()
 
