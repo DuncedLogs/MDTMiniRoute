@@ -843,6 +843,12 @@ local function RefreshIfNeeded(force)
 end
 
 local function HookMDT()
+  -- Keep Mini Route passive toward MDT's own UI/bootstrap path. Polling via
+  -- BuildSignature/OnUpdate is enough for the overlay and avoids blocking /mdt.
+  return
+end
+
+local function HookMDTDisabled()
   if hooksInstalled then return end
   local MDT = GetMDT()
   if not MDT then return end
@@ -983,6 +989,12 @@ local function InjectMDTSettings()
 end
 
 local function QueueMDTSettingsInjection()
+  -- Disabled for now: injecting AceGUI controls into MDT's settings during the
+  -- first MDT open can prevent /mdt from showing without surfacing Lua errors.
+  return
+end
+
+local function QueueMDTSettingsInjectionDisabled()
   local MDT = GetMDT()
   if not MDT then return end
 
