@@ -26,8 +26,10 @@ local DEFAULTS = {
   showPullNumbers = true,
   showRouteLines = false,
   showFrameArtwork = true,
+  onlyShowInMatchingDungeon = false,
   alpha = 0.95,
   iconAlpha = 1,
+  dungeonLayouts = {},
   width = 348,
   point = "BOTTOMLEFT",
   relativePoint = "BOTTOMLEFT",
@@ -77,10 +79,14 @@ local monitorElapsed = 0
 local settingsUpdating
 local settingsOpenedWithMDT
 local lastMDTShown
+local activeLayoutDungeonIdx
+local applyingDungeonLayout
 
 local linePool, markerPool, dotPool, enemyPool, poiPool = {}, {}, {}, {}, {}
 local usedLines, usedMarkers, usedDots, usedEnemies, usedPOIs = 0, 0, 0, 0, 0
 local ResetPosition, ToggleShown, SetLocked, ShowSettingsWindow, ShowContextMenu
+local SaveActiveDungeonLayout, UpdateOverlayVisibility
+local ApplySize, RefreshIfNeeded, RefreshSettingsWindow
 
 local function Print(msg)
   DEFAULT_CHAT_FRAME:AddMessage("|cff66ccffMDT Mini Route:|r "..msg)
@@ -199,6 +205,9 @@ local function SavePosition()
   db.relativePoint = relativePoint or DEFAULTS.relativePoint
   db.x = x or DEFAULTS.x
   db.y = y or DEFAULTS.y
+  if SaveActiveDungeonLayout then
+    SaveActiveDungeonLayout()
+  end
 end
 
 local function GetMDT()
@@ -217,6 +226,130 @@ local function GetCurrentPreset()
   if not MDT or type(MDT.GetCurrentPreset) ~= "function" then return end
   local ok, preset = pcall(MDT.GetCurrentPreset, MDT)
   if ok then return preset end
+end
+
+local function GetRouteDungeonIdx()
+  local mdtDB = GetMDTDB()
+  local preset = GetCurrentPreset()
+  local dungeonIdx = preset and preset.value and preset.value.currentDungeonIdx
+  return tonumber(dungeonIdx or (mdtDB and mdtDB.currentDungeonIdx))
+end
+
+local function GetPlayerDungeonIdx()
+  local MDT = GetMDT()
+  if not MDT or type(MDT.zoneIdToDungeonIdx) ~= "table" then return end
+  if not C_Map or type(C_Map.GetBestMapForUnit) ~= "function" then return end
+
+  local zoneId = C_Map.GetBestMapForUnit("player")
+  return zoneId and MDT.zoneIdToDungeonIdx[zoneId], zoneId
+end
+
+local function IsInMatchingDungeon()
+  local routeDungeonIdx = GetRouteDungeonIdx()
+  local playerDungeonIdx = GetPlayerDungeonIdx()
+  return routeDungeonIdx and playerDungeonIdx and routeDungeonIdx == playerDungeonIdx, routeDungeonIdx, playerDungeonIdx
+end
+
+local function EnsureDungeonLayouts()
+  if type(db.dungeonLayouts) ~= "table" then
+    db.dungeonLayouts = {}
+  end
+  return db.dungeonLayouts
+end
+
+local function LayoutKey(dungeonIdx)
+  return tostring(dungeonIdx)
+end
+
+local function CopyCurrentLayout()
+  return {
+    point = db.point or DEFAULTS.point,
+    relativePoint = db.relativePoint or DEFAULTS.relativePoint,
+    x = db.x or DEFAULTS.x,
+    y = db.y or DEFAULTS.y,
+    width = db.width or DEFAULTS.width,
+    alpha = db.alpha or DEFAULTS.alpha,
+    iconAlpha = db.iconAlpha or DEFAULTS.iconAlpha,
+    showFrameArtwork = db.showFrameArtwork ~= false,
+  }
+end
+
+local function SaveDungeonLayout(dungeonIdx)
+  if not db or applyingDungeonLayout or not dungeonIdx then return end
+
+  local layouts = EnsureDungeonLayouts()
+  layouts[LayoutKey(dungeonIdx)] = CopyCurrentLayout()
+end
+
+SaveActiveDungeonLayout = function()
+  if not db or not db.onlyShowInMatchingDungeon then return end
+  SaveDungeonLayout(activeLayoutDungeonIdx)
+end
+
+local function ApplyDungeonLayout(dungeonIdx)
+  if not db or not dungeonIdx then return end
+
+  local layouts = EnsureDungeonLayouts()
+  local key = LayoutKey(dungeonIdx)
+  local layout = layouts[key]
+  if type(layout) ~= "table" then
+    layout = CopyCurrentLayout()
+    layouts[key] = layout
+  end
+
+  applyingDungeonLayout = true
+  db.point = layout.point or DEFAULTS.point
+  db.relativePoint = layout.relativePoint or DEFAULTS.relativePoint
+  db.x = layout.x or DEFAULTS.x
+  db.y = layout.y or DEFAULTS.y
+  db.width = Clamp(layout.width or DEFAULTS.width, MIN_WIDTH, MAX_WIDTH)
+  db.alpha = Clamp(layout.alpha or DEFAULTS.alpha, 0.2, 1)
+  db.iconAlpha = Clamp(layout.iconAlpha or DEFAULTS.iconAlpha, 0.2, 1)
+  db.showFrameArtwork = layout.showFrameArtwork ~= false
+
+  if frame then
+    frame:ClearAllPoints()
+    frame:SetPoint(db.point, UIParent, db.relativePoint, db.x, db.y)
+    ApplySize(db.width)
+  end
+
+  applyingDungeonLayout = false
+  RefreshSettingsWindow()
+end
+
+local function SwitchDungeonLayout(dungeonIdx)
+  if not db or not db.onlyShowInMatchingDungeon or not dungeonIdx then return end
+  if activeLayoutDungeonIdx == dungeonIdx then return end
+
+  SaveDungeonLayout(activeLayoutDungeonIdx)
+  activeLayoutDungeonIdx = dungeonIdx
+  ApplyDungeonLayout(dungeonIdx)
+end
+
+UpdateOverlayVisibility = function(force)
+  if not frame or not db then return end
+
+  local canShow = db.shown == true
+  if db.onlyShowInMatchingDungeon then
+    local matches, routeDungeonIdx = IsInMatchingDungeon()
+    canShow = canShow and matches == true
+    if canShow then
+      SwitchDungeonLayout(routeDungeonIdx)
+    elseif activeLayoutDungeonIdx then
+      SaveDungeonLayout(activeLayoutDungeonIdx)
+      activeLayoutDungeonIdx = nil
+    end
+  elseif activeLayoutDungeonIdx then
+    SaveDungeonLayout(activeLayoutDungeonIdx)
+    activeLayoutDungeonIdx = nil
+  end
+
+  if canShow then
+    frame:Show()
+    RefreshIfNeeded(force == true)
+  else
+    frame:Hide()
+  end
 end
 
 local function GetCurrentPull(preset)
@@ -593,7 +726,7 @@ local function LayoutTiles()
   end
 end
 
-local function ApplySize(width)
+ApplySize = function(width)
   if not frame or not db then return end
 
   db.width = Clamp(width or db.width, MIN_WIDTH, MAX_WIDTH)
@@ -606,6 +739,7 @@ local function ApplySize(width)
   ApplyFrameArtwork()
   LayoutTiles()
   RequestRefresh()
+  SaveActiveDungeonLayout()
 end
 
 local function ShowStatus(message)
@@ -924,13 +1058,16 @@ local function BuildSignature()
     tostring(db.showPullNumbers),
     tostring(db.showRouteLines),
     tostring(db.showFrameArtwork),
+    tostring(db.onlyShowInMatchingDungeon),
     tostring(db.alpha),
     tostring(db.iconAlpha),
+    tostring(activeLayoutDungeonIdx),
+    tostring(select(2, IsInMatchingDungeon())),
     tostring(db.width),
   }, ":")
 end
 
-local function RefreshIfNeeded(force)
+RefreshIfNeeded = function(force)
   if not frame or not frame:IsShown() then return end
   local signature = BuildSignature()
   if force or dirty or signature ~= lastSignature then
@@ -1014,18 +1151,17 @@ local function SetBooleanOption(key, value, silent)
 
   db[key] = value == true
   if key == "shown" then
-    if frame then
-      if db.shown then
-        frame:Show()
-        RefreshIfNeeded(true)
-      else
-        frame:Hide()
-      end
-    end
+    UpdateOverlayVisibility(true)
   elseif key == "locked" then
     if SetLocked then
       SetLocked(db.locked, silent)
     end
+  elseif key == "onlyShowInMatchingDungeon" then
+    if not db.onlyShowInMatchingDungeon then
+      SaveDungeonLayout(activeLayoutDungeonIdx)
+      activeLayoutDungeonIdx = nil
+    end
+    UpdateOverlayVisibility(true)
   elseif key == "showFrameArtwork" then
     ApplySize(db.width)
     RefreshIfNeeded(true)
@@ -1037,7 +1173,7 @@ end
 
 local UpdatePullDropdown
 
-local function RefreshSettingsWindow()
+RefreshSettingsWindow = function()
   if not settingsFrame or not db then return end
 
   settingsUpdating = true
@@ -1174,7 +1310,7 @@ local function CreateSettingsWindow()
   settingsFrame:SetMovable(true)
   settingsFrame:EnableMouse(true)
   settingsFrame:RegisterForDrag("LeftButton")
-  settingsFrame:SetSize(330, 494)
+  settingsFrame:SetSize(330, 518)
   settingsFrame:SetBackdrop({
     bgFile = "Interface\\Buttons\\WHITE8X8",
     edgeFile = "Interface\\Buttons\\WHITE8X8",
@@ -1212,15 +1348,16 @@ local function CreateSettingsWindow()
 
   MakeNativeCheck(settingsFrame, "Show mini route overlay", "shown", 14, -42)
   MakeNativeCheck(settingsFrame, "Lock overlay position", "locked", 14, -66)
-  MakeNativeCheck(settingsFrame, "Show frame and title", "showFrameArtwork", 14, -90)
-  MakeNativeCheck(settingsFrame, "Show all pulls", "showAllPulls", 14, -124)
+  MakeNativeCheck(settingsFrame, "Only show in matching dungeon", "onlyShowInMatchingDungeon", 14, -90)
+  MakeNativeCheck(settingsFrame, "Show frame and title", "showFrameArtwork", 14, -114)
+  MakeNativeCheck(settingsFrame, "Show all pulls", "showAllPulls", 14, -148)
 
   local pullLabel = settingsFrame:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
-  pullLabel:SetPoint("TOPLEFT", settingsFrame, "TOPLEFT", 18, -154)
+  pullLabel:SetPoint("TOPLEFT", settingsFrame, "TOPLEFT", 18, -178)
   pullLabel:SetText("Selected pull")
 
   local pullDropdown = CreateFrame("Frame", NextControlName("PullDropdown"), settingsFrame, "UIDropDownMenuTemplate")
-  pullDropdown:SetPoint("TOPLEFT", settingsFrame, "TOPLEFT", -2, -170)
+  pullDropdown:SetPoint("TOPLEFT", settingsFrame, "TOPLEFT", -2, -194)
   UIDropDownMenu_SetWidth(pullDropdown, 130)
   UIDropDownMenu_Initialize(pullDropdown, function(_, level)
     if level ~= 1 then return end
@@ -1250,35 +1387,37 @@ local function CreateSettingsWindow()
   end)
   settingsControls.pullDropdown = pullDropdown
 
-  MakeNativeCheck(settingsFrame, "Show pull numbers", "showPullNumbers", 14, -216)
-  MakeNativeCheck(settingsFrame, "Show MDT-style pull outlines", "showPullOutlines", 14, -240)
-  MakeNativeCheck(settingsFrame, "Show route connection lines", "showRouteLines", 14, -264)
+  MakeNativeCheck(settingsFrame, "Show pull numbers", "showPullNumbers", 14, -240)
+  MakeNativeCheck(settingsFrame, "Show MDT-style pull outlines", "showPullOutlines", 14, -264)
+  MakeNativeCheck(settingsFrame, "Show route connection lines", "showRouteLines", 14, -288)
 
-  settingsControls.widthSlider = MakeNativeSlider(settingsFrame, "Overlay width", MIN_WIDTH, MAX_WIDTH, 1, 22, -310, function(value)
+  settingsControls.widthSlider = MakeNativeSlider(settingsFrame, "Overlay width", MIN_WIDTH, MAX_WIDTH, 1, 22, -334, function(value)
     ApplySize(value)
     SavePosition()
     RequestRefresh()
     RefreshIfNeeded(true)
   end)
 
-  settingsControls.alphaSlider = MakeNativeSlider(settingsFrame, "Map alpha", 0.2, 1, 0.05, 22, -364, function(value)
+  settingsControls.alphaSlider = MakeNativeSlider(settingsFrame, "Map alpha", 0.2, 1, 0.05, 22, -388, function(value)
     db.alpha = Clamp(value, 0.2, 1)
     ApplyMapAlpha()
+    SaveActiveDungeonLayout()
   end)
 
-  settingsControls.iconAlphaSlider = MakeNativeSlider(settingsFrame, "Icon alpha", 0.2, 1, 0.05, 22, -418, function(value)
+  settingsControls.iconAlphaSlider = MakeNativeSlider(settingsFrame, "Icon alpha", 0.2, 1, 0.05, 22, -442, function(value)
     db.iconAlpha = Clamp(value, 0.2, 1)
+    SaveActiveDungeonLayout()
     RequestRefresh()
     RefreshIfNeeded(true)
   end)
 
-  MakeNativeButton(settingsFrame, "Reset Position", 14, -460, 120, function()
+  MakeNativeButton(settingsFrame, "Reset Position", 14, -484, 120, function()
     ResetPosition()
     RequestRefresh()
     RefreshIfNeeded(true)
     RefreshSettingsWindow()
   end)
-  MakeNativeButton(settingsFrame, "Hide Overlay", 144, -460, 120, function()
+  MakeNativeButton(settingsFrame, "Hide Overlay", 144, -484, 120, function()
     SetBooleanOption("shown", false, true)
     RefreshSettingsWindow()
   end)
@@ -1335,6 +1474,7 @@ ShowContextMenu = function(anchor)
     { text = "Selected pull", hasArrow = true, notCheckable = true, menuList = pullMenu },
     { text = db.shown and "Hide overlay" or "Show overlay", notCheckable = true, func = ToggleShown },
     { text = db.locked and "Unlock overlay" or "Lock overlay", notCheckable = true, func = function() SetLocked(not db.locked) RefreshSettingsWindow() end },
+    { text = "Only show in matching dungeon", checked = db.onlyShowInMatchingDungeon, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("onlyShowInMatchingDungeon") end },
     { text = "Show frame and title", checked = db.showFrameArtwork, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showFrameArtwork") end },
     { text = "Show all pulls", checked = db.showAllPulls, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showAllPulls") end },
     { text = "Show pull numbers", checked = db.showPullNumbers, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showPullNumbers") end },
@@ -1362,6 +1502,8 @@ local function CreateMDTMonitor()
     if monitorElapsed < 0.25 then return end
     monitorElapsed = 0
 
+    UpdateOverlayVisibility(false)
+
     local MDT = GetMDT()
     local mdtShown = MDT and MDT.main_frame and MDT.main_frame:IsShown() == true
     if mdtShown and not lastMDTShown then
@@ -1388,12 +1530,7 @@ end
 
 ToggleShown = function()
   db.shown = not db.shown
-  if db.shown then
-    frame:Show()
-    RefreshIfNeeded(true)
-  else
-    frame:Hide()
-  end
+  UpdateOverlayVisibility(true)
   Print(db.shown and "shown" or "hidden")
 end
 
@@ -1419,11 +1556,10 @@ local function HandleSlash(input)
     ShowSettingsWindow(false)
   elseif command == "show" then
     db.shown = true
-    frame:Show()
-    RefreshIfNeeded(true)
+    UpdateOverlayVisibility(true)
   elseif command == "hide" then
     db.shown = false
-    frame:Hide()
+    UpdateOverlayVisibility(false)
   elseif command == "lock" then
     SetLocked(true)
   elseif command == "unlock" then
@@ -1471,6 +1607,10 @@ local function HandleSlash(input)
     SetBooleanOption("showFrameArtwork", not db.showFrameArtwork, false)
     RefreshSettingsWindow()
     Print(db.showFrameArtwork and "frame and title shown" or "frame and title hidden")
+  elseif command == "dungeon" or command == "dungeononly" then
+    SetBooleanOption("onlyShowInMatchingDungeon", not db.onlyShowInMatchingDungeon, false)
+    RefreshSettingsWindow()
+    Print(db.onlyShowInMatchingDungeon and "only showing in matching dungeon" or "showing outside dungeons too")
   elseif command == "size" then
     local size = tonumber(rest)
     if size then
@@ -1485,6 +1625,7 @@ local function HandleSlash(input)
     if alpha then
       db.alpha = Clamp(alpha, 0.2, 1)
       ApplyMapAlpha()
+      SaveActiveDungeonLayout()
       Print("map alpha "..db.alpha)
     else
       Print("usage: /mdtmini alpha 0.85")
@@ -1493,6 +1634,7 @@ local function HandleSlash(input)
     local alpha = tonumber(rest)
     if alpha then
       db.iconAlpha = Clamp(alpha, 0.2, 1)
+      SaveActiveDungeonLayout()
       RequestRefresh()
       RefreshIfNeeded(true)
       Print("icon alpha "..db.iconAlpha)
@@ -1503,7 +1645,7 @@ local function HandleSlash(input)
     ResetPosition()
     RefreshIfNeeded(true)
   else
-    Print("/mdtmini options | toggle | show | hide | lock | unlock | pull <number> | all | outlines | lines | numbers | frame | size <width> | alpha <0.2-1> | iconalpha <0.2-1> | reset")
+    Print("/mdtmini options | toggle | show | hide | lock | unlock | pull <number> | all | outlines | lines | numbers | frame | dungeon | size <width> | alpha <0.2-1> | iconalpha <0.2-1> | reset")
   end
 end
 
@@ -1631,11 +1773,7 @@ local function CreateOverlay()
   end)
 
   ApplySize(db.width)
-  if db.shown then
-    frame:Show()
-  else
-    frame:Hide()
-  end
+  UpdateOverlayVisibility(true)
 end
 
 local function Initialize()
@@ -1648,6 +1786,10 @@ local function Initialize()
   db.alpha = Clamp(db.alpha, 0.2, 1)
   db.iconAlpha = Clamp(db.iconAlpha, 0.2, 1)
   db.showFrameArtwork = db.showFrameArtwork ~= false
+  db.onlyShowInMatchingDungeon = db.onlyShowInMatchingDungeon == true
+  if type(db.dungeonLayouts) ~= "table" then
+    db.dungeonLayouts = {}
+  end
   db.showEnemies = false
   db.showEnemyPortraits = false
   db.showUnpulledEnemies = false
