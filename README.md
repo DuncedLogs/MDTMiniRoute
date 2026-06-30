@@ -35,12 +35,13 @@ The current `.toc` includes interface `120007`.
 - `/mdtmini sidebar` toggles the clickable pull sidebar.
 - `/mdtmini side` toggles the sidebar between left and right.
 - `/mdtmini detach` toggles the sidebar between attached and detached.
+- `/mdtmini sidebarlock` locks or unlocks movement for the detached sidebar.
 - `/mdtmini percent` toggles sidebar percentages.
 - `/mdtmini size 348` sets overlay width.
 - `/mdtmini alpha 0.85` sets map transparency.
 - `/mdtmini iconalpha 0.85` sets route marker transparency.
 - `/mdtmini reset` resets size and position.
 
-Click the pull sidebar to choose the selected pull. The fixed `All Pulls` button at the top of the sidebar toggles all pulls vs selected/current pull only without scrolling away. Mouse wheel over the sidebar scrolls it. Detached sidebars can be moved by dragging the sidebar background/border. Drag the title bar, or the map itself when the frame/title is hidden, to move the overlay. Mouse wheel over the overlay resizes it.
+Click the pull sidebar to choose the selected pull. The fixed `All Pulls` button at the top of the sidebar toggles all pulls vs selected/current pull only without scrolling away, and also works as the detached sidebar drag handle when `Lock detached sidebar` is off. Mouse wheel over the sidebar scrolls it. Drag the title bar, or the map itself when the frame/title is hidden, to move the overlay. Mouse wheel over the overlay resizes it.
 
 When `/mdt` opens, Mini Route opens its own options window.

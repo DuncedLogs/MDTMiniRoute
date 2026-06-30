@@ -41,6 +41,7 @@ local DEFAULTS = {
   showPullPercent = true,
   pullSidebarOnLeft = false,
   pullSidebarDetached = false,
+  pullSidebarLocked = false,
   pullSidebarWidth = SIDEBAR_DEFAULT_WIDTH,
   pullSidebarHeight = 0,
   pullSidebarScale = 1,
@@ -361,6 +362,7 @@ local function CopyCurrentLayout()
     showFrameArtwork = db.showFrameArtwork ~= false,
     pullSidebarOnLeft = db.pullSidebarOnLeft == true,
     pullSidebarDetached = db.pullSidebarDetached == true,
+    pullSidebarLocked = db.pullSidebarLocked == true,
     pullSidebarWidth = db.pullSidebarWidth or DEFAULTS.pullSidebarWidth,
     pullSidebarHeight = db.pullSidebarHeight or DEFAULTS.pullSidebarHeight,
     pullSidebarScale = db.pullSidebarScale or DEFAULTS.pullSidebarScale,
@@ -405,6 +407,7 @@ local function ApplyDungeonLayout(dungeonIdx)
   db.showFrameArtwork = layout.showFrameArtwork ~= false
   db.pullSidebarOnLeft = layout.pullSidebarOnLeft == true
   db.pullSidebarDetached = layout.pullSidebarDetached == true
+  db.pullSidebarLocked = layout.pullSidebarLocked == true
   db.pullSidebarWidth = Clamp(layout.pullSidebarWidth or DEFAULTS.pullSidebarWidth, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH)
   db.pullSidebarHeight = Clamp(layout.pullSidebarHeight or DEFAULTS.pullSidebarHeight, 0, SIDEBAR_MAX_HEIGHT)
   db.pullSidebarScale = Clamp(layout.pullSidebarScale or DEFAULTS.pullSidebarScale, SIDEBAR_MIN_SCALE, SIDEBAR_MAX_SCALE)
@@ -1400,6 +1403,7 @@ local function BuildSignature()
     tostring(db.showPullPercent),
     tostring(db.pullSidebarOnLeft),
     tostring(db.pullSidebarDetached),
+    tostring(db.pullSidebarLocked),
     tostring(db.pullSidebarWidth),
     tostring(db.pullSidebarHeight),
     tostring(db.pullSidebarScale),
@@ -1509,6 +1513,8 @@ local function SetBooleanOption(key, value, silent)
   elseif key == "showFrameArtwork" or key == "showPullSidebar" or key == "showPullPercent" or key == "pullSidebarOnLeft" or key == "pullSidebarDetached" then
     ApplySize(db.width)
     RefreshIfNeeded(true)
+  elseif key == "pullSidebarLocked" then
+    SaveActiveDungeonLayout()
   elseif key == "showAllPulls" then
     UpdatePullSidebarHeader()
     RequestRefresh()
@@ -1516,6 +1522,19 @@ local function SetBooleanOption(key, value, silent)
   else
     RequestRefresh()
     RefreshIfNeeded(true)
+  end
+end
+
+local function UpdateSettingsControlVisibility()
+  if not settingsControls.checks then return end
+
+  local sidebarLockCheck = settingsControls.checks.pullSidebarLocked
+  if sidebarLockCheck then
+    if db and db.pullSidebarDetached then
+      sidebarLockCheck:Show()
+    else
+      sidebarLockCheck:Hide()
+    end
   end
 end
 
@@ -1549,6 +1568,7 @@ RefreshSettingsWindow = function()
   if UpdatePullSidebarHeader then
     UpdatePullSidebarHeader()
   end
+  UpdateSettingsControlVisibility()
   settingsUpdating = false
 end
 
@@ -1646,7 +1666,7 @@ local function CreateSettingsWindow()
   settingsFrame:SetMovable(true)
   settingsFrame:EnableMouse(true)
   settingsFrame:RegisterForDrag("LeftButton")
-  settingsFrame:SetSize(330, 724)
+  settingsFrame:SetSize(330, 748)
   settingsFrame:SetBackdrop({
     bgFile = "Interface\\Buttons\\WHITE8X8",
     edgeFile = "Interface\\Buttons\\WHITE8X8",
@@ -1689,57 +1709,58 @@ local function CreateSettingsWindow()
   MakeNativeCheck(settingsFrame, "Show pull sidebar", "showPullSidebar", 14, -148)
   MakeNativeCheck(settingsFrame, "Sidebar on left", "pullSidebarOnLeft", 14, -172)
   MakeNativeCheck(settingsFrame, "Detach sidebar", "pullSidebarDetached", 14, -196)
-  MakeNativeCheck(settingsFrame, "Show pull percentages", "showPullPercent", 14, -220)
-  MakeNativeCheck(settingsFrame, "Show all pulls", "showAllPulls", 14, -254)
-  MakeNativeCheck(settingsFrame, "Show pull numbers on map", "showPullNumbers", 14, -278)
-  MakeNativeCheck(settingsFrame, "Show MDT-style pull outlines", "showPullOutlines", 14, -302)
-  MakeNativeCheck(settingsFrame, "Show route connection lines", "showRouteLines", 14, -326)
+  MakeNativeCheck(settingsFrame, "Lock detached sidebar", "pullSidebarLocked", 34, -220)
+  MakeNativeCheck(settingsFrame, "Show pull percentages", "showPullPercent", 14, -244)
+  MakeNativeCheck(settingsFrame, "Show all pulls", "showAllPulls", 14, -278)
+  MakeNativeCheck(settingsFrame, "Show pull numbers on map", "showPullNumbers", 14, -302)
+  MakeNativeCheck(settingsFrame, "Show MDT-style pull outlines", "showPullOutlines", 14, -326)
+  MakeNativeCheck(settingsFrame, "Show route connection lines", "showRouteLines", 14, -350)
 
-  settingsControls.widthSlider = MakeNativeSlider(settingsFrame, "Overlay width", MIN_WIDTH, MAX_WIDTH, 1, 22, -372, function(value)
+  settingsControls.widthSlider = MakeNativeSlider(settingsFrame, "Overlay width", MIN_WIDTH, MAX_WIDTH, 1, 22, -396, function(value)
     ApplySize(value)
     SavePosition()
     RequestRefresh()
     RefreshIfNeeded(true)
   end)
 
-  settingsControls.sidebarWidthSlider = MakeNativeSlider(settingsFrame, "Sidebar width", SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH, 1, 22, -426, function(value)
+  settingsControls.sidebarWidthSlider = MakeNativeSlider(settingsFrame, "Sidebar width", SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH, 1, 22, -450, function(value)
     db.pullSidebarWidth = Clamp(value, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH)
     ApplySize(db.width)
     RefreshIfNeeded(true)
   end)
 
-  settingsControls.sidebarHeightSlider = MakeNativeSlider(settingsFrame, "Sidebar length", SIDEBAR_MIN_HEIGHT, SIDEBAR_MAX_HEIGHT, 1, 22, -480, function(value)
+  settingsControls.sidebarHeightSlider = MakeNativeSlider(settingsFrame, "Sidebar length", SIDEBAR_MIN_HEIGHT, SIDEBAR_MAX_HEIGHT, 1, 22, -504, function(value)
     db.pullSidebarHeight = Clamp(value, SIDEBAR_MIN_HEIGHT, SIDEBAR_MAX_HEIGHT)
     ApplySize(db.width)
     RefreshIfNeeded(true)
   end)
 
-  settingsControls.sidebarScaleSlider = MakeNativeSlider(settingsFrame, "Sidebar scale", SIDEBAR_MIN_SCALE, SIDEBAR_MAX_SCALE, 0.05, 22, -534, function(value)
+  settingsControls.sidebarScaleSlider = MakeNativeSlider(settingsFrame, "Sidebar scale", SIDEBAR_MIN_SCALE, SIDEBAR_MAX_SCALE, 0.05, 22, -558, function(value)
     db.pullSidebarScale = Clamp(value, SIDEBAR_MIN_SCALE, SIDEBAR_MAX_SCALE)
     ApplySize(db.width)
     RefreshIfNeeded(true)
   end)
 
-  settingsControls.alphaSlider = MakeNativeSlider(settingsFrame, "Map alpha", 0.2, 1, 0.05, 22, -588, function(value)
+  settingsControls.alphaSlider = MakeNativeSlider(settingsFrame, "Map alpha", 0.2, 1, 0.05, 22, -612, function(value)
     db.alpha = Clamp(value, 0.2, 1)
     ApplyMapAlpha()
     SaveActiveDungeonLayout()
   end)
 
-  settingsControls.iconAlphaSlider = MakeNativeSlider(settingsFrame, "Icon alpha", 0.2, 1, 0.05, 22, -642, function(value)
+  settingsControls.iconAlphaSlider = MakeNativeSlider(settingsFrame, "Icon alpha", 0.2, 1, 0.05, 22, -666, function(value)
     db.iconAlpha = Clamp(value, 0.2, 1)
     SaveActiveDungeonLayout()
     RequestRefresh()
     RefreshIfNeeded(true)
   end)
 
-  MakeNativeButton(settingsFrame, "Reset Position", 14, -684, 120, function()
+  MakeNativeButton(settingsFrame, "Reset Position", 14, -708, 120, function()
     ResetPosition()
     RequestRefresh()
     RefreshIfNeeded(true)
     RefreshSettingsWindow()
   end)
-  MakeNativeButton(settingsFrame, "Hide Overlay", 144, -684, 120, function()
+  MakeNativeButton(settingsFrame, "Hide Overlay", 144, -708, 120, function()
     SetBooleanOption("shown", false, true)
     RefreshSettingsWindow()
   end)
@@ -1788,6 +1809,10 @@ ShowContextMenu = function(anchor)
     { text = "Reset position", notCheckable = true, func = function() ResetPosition() RequestRefresh() RefreshIfNeeded(true) RefreshSettingsWindow() end },
   }
 
+  if db.pullSidebarDetached then
+    table.insert(menu, 10, { text = "Lock detached sidebar", checked = db.pullSidebarLocked, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("pullSidebarLocked") end })
+  end
+
   if EasyMenu then
     EasyMenu(menu, contextMenuFrame, anchor or "cursor", 0, 0, "MENU", 2)
   else
@@ -1831,6 +1856,7 @@ ResetPosition = function()
   db.pullSidebarWidth = DEFAULTS.pullSidebarWidth
   db.pullSidebarHeight = DEFAULTS.pullSidebarHeight
   db.pullSidebarScale = DEFAULTS.pullSidebarScale
+  db.pullSidebarLocked = DEFAULTS.pullSidebarLocked
   db.pullSidebarPoint = DEFAULTS.pullSidebarPoint
   db.pullSidebarRelativePoint = DEFAULTS.pullSidebarRelativePoint
   db.pullSidebarX = DEFAULTS.pullSidebarX
@@ -1938,6 +1964,10 @@ local function HandleSlash(input)
     SetBooleanOption("pullSidebarDetached", not db.pullSidebarDetached, false)
     RefreshSettingsWindow()
     Print(db.pullSidebarDetached and "sidebar detached" or "sidebar attached")
+  elseif command == "sidebarlock" or command == "locksidebar" then
+    SetBooleanOption("pullSidebarLocked", not db.pullSidebarLocked, false)
+    RefreshSettingsWindow()
+    Print(db.pullSidebarLocked and "detached sidebar locked" or "detached sidebar unlocked")
   elseif command == "percent" or command == "percents" then
     SetBooleanOption("showPullPercent", not db.showPullPercent, false)
     RefreshSettingsWindow()
@@ -1976,7 +2006,7 @@ local function HandleSlash(input)
     ResetPosition()
     RefreshIfNeeded(true)
   else
-    Print("/mdtmini options | toggle | show | hide | lock | unlock | pull <number> | all | outlines | lines | numbers | frame | dungeon | sidebar | side | detach | percent | size <width> | alpha <0.2-1> | iconalpha <0.2-1> | reset")
+    Print("/mdtmini options | toggle | show | hide | lock | unlock | pull <number> | all | outlines | lines | numbers | frame | dungeon | sidebar | side | detach | sidebarlock | percent | size <width> | alpha <0.2-1> | iconalpha <0.2-1> | reset")
   end
 end
 
@@ -2086,7 +2116,7 @@ local function CreateOverlay()
   pullSidebar:EnableMouseWheel(true)
   pullSidebar:RegisterForDrag("LeftButton")
   pullSidebar:SetScript("OnMouseDown", function(_, button)
-    if button == "LeftButton" and db.pullSidebarDetached and not db.locked then
+    if button == "LeftButton" and db.pullSidebarDetached and not db.pullSidebarLocked then
       pullSidebar:StartMoving()
     elseif button == "RightButton" then
       ShowContextMenu(pullSidebar)
@@ -2110,6 +2140,7 @@ local function CreateOverlay()
   })
   pullSidebarShowAllButton:EnableMouse(true)
   pullSidebarShowAllButton:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+  pullSidebarShowAllButton:RegisterForDrag("LeftButton")
   pullSidebarShowAllButton.text = pullSidebarShowAllButton:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
   pullSidebarShowAllButton.text:SetPoint("CENTER", pullSidebarShowAllButton, "CENTER", 0, 0)
   pullSidebarShowAllButton.text:SetJustifyH("CENTER")
@@ -2120,6 +2151,15 @@ local function CreateOverlay()
     end
     SetBooleanOption("showAllPulls", not db.showAllPulls, false)
     RefreshSettingsWindow()
+  end)
+  pullSidebarShowAllButton:SetScript("OnDragStart", function()
+    if db.pullSidebarDetached and not db.pullSidebarLocked then
+      pullSidebar:StartMoving()
+    end
+  end)
+  pullSidebarShowAllButton:SetScript("OnDragStop", function()
+    pullSidebar:StopMovingOrSizing()
+    SaveSidebarPosition()
   end)
   pullSidebarShowAllButton:SetScript("OnMouseWheel", function(_, delta)
     ScrollPullSidebar(delta)
@@ -2186,6 +2226,7 @@ local function Initialize()
   db.showPullPercent = db.showPullPercent ~= false
   db.pullSidebarOnLeft = db.pullSidebarOnLeft == true
   db.pullSidebarDetached = db.pullSidebarDetached == true
+  db.pullSidebarLocked = db.pullSidebarLocked == true
   db.pullSidebarWidth = Clamp(db.pullSidebarWidth or DEFAULTS.pullSidebarWidth, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH)
   db.pullSidebarHeight = Clamp(db.pullSidebarHeight or DEFAULTS.pullSidebarHeight, 0, SIDEBAR_MAX_HEIGHT)
   db.pullSidebarScale = Clamp(db.pullSidebarScale or DEFAULTS.pullSidebarScale, SIDEBAR_MIN_SCALE, SIDEBAR_MAX_SCALE)
