@@ -15,9 +15,10 @@ The current `.toc` includes interface `120007`.
 
 ## Install
 
-1. Extract `MDTMiniRoute` into `World of Warcraft\_retail_\Interface\AddOns`.
-2. Restart the game or run `/reload`.
-3. Enable `MDT Mini Route` in the addon list.
+1. Download [`MDTMiniRoute-latest.zip`](https://github.com/DuncedLogs/MDTMiniRoute/raw/main/MDTMiniRoute-latest.zip).
+2. Extract `MDTMiniRoute` into `World of Warcraft\_retail_\Interface\AddOns`.
+3. Restart the game or run `/reload`.
+4. Enable `MDT Mini Route` in the addon list.
 
 ## Commands
 

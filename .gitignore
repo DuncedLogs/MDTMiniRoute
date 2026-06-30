@@ -1,0 +1,3 @@
+# Keep the repository root tidy; publish one stable package link instead.
+MDTMiniRoute-*.zip
+!MDTMiniRoute-latest.zip
