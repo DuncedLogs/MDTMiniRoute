@@ -5,6 +5,11 @@ local MAP_WIDTH = 840
 local MAP_HEIGHT = 555
 local HEADER_HEIGHT = 22
 local PADDING = 4
+local SIDEBAR_SPACING = 4
+local SIDEBAR_WIDTH = 154
+local SIDEBAR_WIDTH_NO_PERCENT = 112
+local SIDEBAR_WIDTH_NUMBERS = 92
+local SIDEBAR_WIDTH_NUMBERS_NO_PERCENT = 42
 local MIN_WIDTH = 220
 local MAX_WIDTH = 720
 local REFRESH_INTERVAL = 0.35
@@ -27,6 +32,9 @@ local DEFAULTS = {
   showRouteLines = false,
   showFrameArtwork = true,
   onlyShowInMatchingDungeon = false,
+  showPullSidebar = true,
+  pullSidebarNumbersOnly = false,
+  showPullPercent = true,
   alpha = 0.95,
   iconAlpha = 1,
   dungeonLayouts = {},
@@ -63,6 +71,9 @@ local closeButton
 local mapViewport
 local mapBg
 local canvas
+local pullSidebar
+local pullSidebarScroll
+local pullSidebarContent
 local statusText
 local settingsFrame
 local settingsControls = {}
@@ -84,9 +95,11 @@ local applyingDungeonLayout
 
 local linePool, markerPool, dotPool, enemyPool, poiPool = {}, {}, {}, {}, {}
 local usedLines, usedMarkers, usedDots, usedEnemies, usedPOIs = 0, 0, 0, 0, 0
+local pullSidebarRows = {}
 local ResetPosition, ToggleShown, SetLocked, ShowSettingsWindow, ShowContextMenu
 local SaveActiveDungeonLayout, UpdateOverlayVisibility
 local ApplySize, RefreshIfNeeded, RefreshSettingsWindow
+local SelectPull, UpdatePullSidebar
 
 local function Print(msg)
   DEFAULT_CHAT_FRAME:AddMessage("|cff66ccffMDT Mini Route:|r "..msg)
@@ -137,6 +150,20 @@ local function GetViewportHeight()
   return GetViewportWidth() * (MAP_HEIGHT / MAP_WIDTH)
 end
 
+local function GetPullSidebarWidth()
+  if not db or db.showPullSidebar == false then return 0 end
+  if db.pullSidebarNumbersOnly then
+    return db.showPullPercent == false and SIDEBAR_WIDTH_NUMBERS_NO_PERCENT or SIDEBAR_WIDTH_NUMBERS
+  end
+  return db.showPullPercent == false and SIDEBAR_WIDTH_NO_PERCENT or SIDEBAR_WIDTH
+end
+
+local function GetPullSidebarTotalWidth()
+  local width = GetPullSidebarWidth()
+  if width <= 0 then return 0 end
+  return SIDEBAR_SPACING + width
+end
+
 local function ApplyMapAlpha()
   if not db then return end
 
@@ -181,13 +208,27 @@ local function ApplyFrameArtwork()
   end
 
   if mapViewport then
+    local sidebarTotalWidth = GetPullSidebarTotalWidth()
     mapViewport:ClearAllPoints()
     if showArtwork then
       mapViewport:SetPoint("TOPLEFT", frame, "TOPLEFT", PADDING, -HEADER_HEIGHT)
-      mapViewport:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -PADDING, PADDING)
+      mapViewport:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -(PADDING + sidebarTotalWidth), PADDING)
     else
       mapViewport:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0)
-      mapViewport:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 0)
+      mapViewport:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -sidebarTotalWidth, 0)
+    end
+  end
+
+  if pullSidebar then
+    local sidebarWidth = GetPullSidebarWidth()
+    pullSidebar:ClearAllPoints()
+    if sidebarWidth > 0 then
+      pullSidebar:SetWidth(sidebarWidth)
+      pullSidebar:SetPoint("TOPLEFT", mapViewport, "TOPRIGHT", SIDEBAR_SPACING, 0)
+      pullSidebar:SetPoint("BOTTOMLEFT", mapViewport, "BOTTOMRIGHT", SIDEBAR_SPACING, 0)
+      pullSidebar:Show()
+    else
+      pullSidebar:Hide()
     end
   end
 
@@ -379,6 +420,14 @@ local function HexToRGB(hex)
 end
 
 local function GetPullColor(pulls, pullIdx)
+  local MDT = GetMDT()
+  if MDT and type(MDT.DungeonEnemies_GetPullColor) == "function" then
+    local ok, r, g, b = pcall(MDT.DungeonEnemies_GetPullColor, MDT, pullIdx, pulls)
+    if ok and r and g and b then
+      return r, g, b
+    end
+  end
+
   local pull = pulls and pulls[pullIdx]
   if pull and pull.color then
     local r, g, b = HexToRGB(pull.color)
@@ -595,6 +644,277 @@ local function DrawPOI(poi, scale)
   end
 end
 
+local function HidePullSidebarRows()
+  for i = 1, #pullSidebarRows do
+    pullSidebarRows[i]:Hide()
+  end
+end
+
+local function GetPullSidebarRowHeight()
+  if db and db.pullSidebarNumbersOnly then
+    return db.showPullPercent == false and 18 or 20
+  end
+  return db and db.showPullPercent == false and 26 or 30
+end
+
+local function IsCloneIncluded(MDT, enemyIdx, cloneIdx)
+  if MDT and type(MDT.IsCloneIncluded) == "function" then
+    local ok, included = pcall(MDT.IsCloneIncluded, MDT, enemyIdx, cloneIdx)
+    if ok then return included == true end
+  end
+  return true
+end
+
+local function GetPullEnemyGroups(MDT, mdtDB, pull)
+  local groups = {}
+  local enemies = MDT and MDT.dungeonEnemies and mdtDB and MDT.dungeonEnemies[mdtDB.currentDungeonIdx]
+  if type(pull) ~= "table" or type(enemies) ~= "table" then return groups end
+
+  for enemyIdx, clones in pairs(pull) do
+    local numericEnemyIdx = tonumber(enemyIdx)
+    local enemy = numericEnemyIdx and enemies[numericEnemyIdx]
+    if enemy and type(clones) == "table" then
+      local quantity = 0
+      for _, cloneIdx in pairs(clones) do
+        if enemy.clones and enemy.clones[cloneIdx] and IsCloneIncluded(MDT, numericEnemyIdx, cloneIdx) then
+          quantity = quantity + 1
+        end
+      end
+      if quantity > 0 then
+        groups[#groups + 1] = {
+          quantity = quantity,
+          count = enemy.count or 0,
+          isBoss = enemy.isBoss == true,
+        }
+      end
+    end
+  end
+
+  table.sort(groups, function(a, b)
+    if a.isBoss ~= b.isBoss then return a.isBoss end
+    if a.count ~= b.count then return a.count > b.count end
+    return a.quantity > b.quantity
+  end)
+  return groups
+end
+
+local function GetPullForces(MDT, mdtDB, preset, pullIdx, currentOnly)
+  if MDT and type(MDT.CountForces) == "function" then
+    local ok, forces = pcall(MDT.CountForces, MDT, pullIdx, currentOnly == true)
+    if ok and forces then return forces end
+  end
+
+  local total = 0
+  local pulls = preset and preset.value and preset.value.pulls
+  local enemies = MDT and MDT.dungeonEnemies and mdtDB and MDT.dungeonEnemies[mdtDB.currentDungeonIdx]
+  if type(pulls) ~= "table" or type(enemies) ~= "table" then return 0 end
+
+  for i = 1, #pulls do
+    if (currentOnly and i == pullIdx) or ((not currentOnly) and i <= pullIdx) then
+      for enemyIdx, clones in pairs(pulls[i]) do
+        local numericEnemyIdx = tonumber(enemyIdx)
+        local enemy = numericEnemyIdx and enemies[numericEnemyIdx]
+        if enemy and type(clones) == "table" then
+          for _, cloneIdx in pairs(clones) do
+            if enemy.clones and enemy.clones[cloneIdx] and IsCloneIncluded(MDT, numericEnemyIdx, cloneIdx) then
+              total = total + (enemy.count or 0)
+            end
+          end
+        end
+      end
+    elseif i > pullIdx then
+      break
+    end
+  end
+  return total
+end
+
+local function FormatPercent(forces, maxForces)
+  if not maxForces or maxForces <= 0 then return "" end
+  return string.format("%.2f%%", (forces / maxForces) * 100)
+end
+
+local function ScrollPullSidebar(delta)
+  if not pullSidebarScroll or not pullSidebarContent then return end
+  local maxScroll = math.max(0, (pullSidebarContent:GetHeight() or 0) - (pullSidebarScroll:GetHeight() or 0))
+  local current = pullSidebarScroll:GetVerticalScroll() or 0
+  local nextValue = current - (delta or 0) * 42
+  if nextValue < 0 then nextValue = 0 end
+  if nextValue > maxScroll then nextValue = maxScroll end
+  pullSidebarScroll:SetVerticalScroll(nextValue)
+end
+
+local function AcquirePullSidebarRow(index)
+  local row = pullSidebarRows[index]
+  if row then return row end
+
+  row = CreateFrame("Button", nil, pullSidebarContent, "BackdropTemplate")
+  row:SetBackdrop({
+    bgFile = "Interface\\Buttons\\WHITE8X8",
+    edgeFile = "Interface\\Buttons\\WHITE8X8",
+    edgeSize = 1,
+  })
+  row:SetBackdropBorderColor(0, 0, 0, 0.55)
+  row.highlight = row:CreateTexture(nil, "OVERLAY")
+  row.highlight:SetAllPoints()
+  row.highlight:SetColorTexture(1, 1, 1, 0.16)
+  row.highlight:Hide()
+
+  row.number = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  row.number:SetPoint("LEFT", row, "LEFT", 5, 0)
+  row.number:SetJustifyH("LEFT")
+  row.number:SetFont(row.number:GetFont(), 10, "OUTLINE")
+
+  row.percent = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  row.percent:SetPoint("RIGHT", row, "RIGHT", -5, 0)
+  row.percent:SetJustifyH("RIGHT")
+  row.percent:SetFont(row.percent:GetFont(), 8, "OUTLINE")
+
+  row.dots = {}
+  row:SetScript("OnMouseWheel", function(_, delta)
+    ScrollPullSidebar(delta)
+  end)
+  row:SetScript("OnEnter", function(self)
+    self.highlight:Show()
+    local MDT = GetMDT()
+    if MDT and type(MDT.PullClickAreaOnEnter) == "function" and self.pullIdx then
+      pcall(MDT.PullClickAreaOnEnter, MDT, self.pullIdx)
+    end
+  end)
+  row:SetScript("OnLeave", function(self)
+    self.highlight:Hide()
+    local MDT = GetMDT()
+    if MDT and type(MDT.PullClickAreaOnLeave) == "function" then
+      pcall(MDT.PullClickAreaOnLeave, MDT)
+    end
+  end)
+  row:SetScript("OnClick", function(self)
+    if self.pullIdx and SelectPull then
+      SelectPull(self.pullIdx)
+    end
+  end)
+
+  pullSidebarRows[index] = row
+  return row
+end
+
+local function AcquirePullSidebarDot(row, index)
+  local dot = row.dots[index]
+  if dot then return dot end
+
+  dot = CreateFrame("Frame", nil, row)
+  dot.icon = dot:CreateTexture(nil, "OVERLAY")
+  dot.icon:SetTexture(CIRCLE_TEXTURE)
+  dot.icon:SetSize(9, 9)
+  dot.icon:SetPoint("LEFT", dot, "LEFT", 0, 0)
+  dot.count = dot:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  dot.count:SetPoint("LEFT", dot.icon, "RIGHT", 1, 0)
+  dot.count:SetFont(dot.count:GetFont(), 7, "OUTLINE")
+  row.dots[index] = dot
+  return dot
+end
+
+UpdatePullSidebar = function(mdtDB, preset)
+  if not pullSidebar or not pullSidebarContent or not db then return end
+  if db.showPullSidebar == false then
+    HidePullSidebarRows()
+    return
+  end
+
+  local MDT = GetMDT()
+  local pulls = preset and preset.value and preset.value.pulls
+  if not MDT or not mdtDB or type(pulls) ~= "table" then
+    HidePullSidebarRows()
+    return
+  end
+
+  local sidebarWidth = GetPullSidebarWidth()
+  local rowWidth = math.max(1, sidebarWidth - 4)
+  local rowHeight = GetPullSidebarRowHeight()
+  local rowGap = 2
+  local maxForces = MDT.dungeonTotalCount and MDT.dungeonTotalCount[mdtDB.currentDungeonIdx] and MDT.dungeonTotalCount[mdtDB.currentDungeonIdx].normal
+  local currentPull = tonumber(GetCurrentPull(preset)) or 1
+  local contentHeight = math.max(1, (#pulls * (rowHeight + rowGap)) - rowGap)
+
+  pullSidebar:SetWidth(sidebarWidth)
+  pullSidebarContent:SetSize(rowWidth, contentHeight)
+
+  for pullIdx = 1, #pulls do
+    local row = AcquirePullSidebarRow(pullIdx)
+    local r, g, b = GetPullColor(pulls, pullIdx)
+    local isCurrent = pullIdx == currentPull
+
+    row.pullIdx = pullIdx
+    row:ClearAllPoints()
+    row:SetPoint("TOPLEFT", pullSidebarContent, "TOPLEFT", 0, -((pullIdx - 1) * (rowHeight + rowGap)))
+    row:SetSize(rowWidth, rowHeight)
+    row:SetBackdropColor(r, g, b, isCurrent and 0.88 or 0.58)
+    row:SetBackdropBorderColor(isCurrent and 1 or 0, isCurrent and 0.9 or 0, isCurrent and 0.25 or 0, isCurrent and 0.95 or 0.45)
+
+    row.number:SetText(pullIdx)
+    row.number:SetTextColor(1, 0.84, 0.05, 1)
+    row.number:ClearAllPoints()
+    row.number:SetPoint("LEFT", row, "LEFT", 5, 0)
+    row.number:SetWidth(db.pullSidebarNumbersOnly and (db.showPullPercent == false and rowWidth - 10 or 28) or 20)
+
+    if db.showPullPercent == false then
+      row.percent:Hide()
+    else
+      row.percent:SetText(FormatPercent(GetPullForces(MDT, mdtDB, preset, pullIdx, false), maxForces))
+      row.percent:Show()
+    end
+
+    if db.pullSidebarNumbersOnly then
+      for i = 1, #row.dots do
+        row.dots[i]:Hide()
+      end
+    else
+      local groups = GetPullEnemyGroups(MDT, mdtDB, pulls[pullIdx])
+      local x = 24
+      local rightLimit = rowWidth - (db.showPullPercent == false and 5 or 47)
+      local maxDots = math.max(1, math.floor((rightLimit - x) / 25))
+      local dotIndex = 0
+
+      for i = 1, math.min(#groups, maxDots) do
+        dotIndex = dotIndex + 1
+        local dot = AcquirePullSidebarDot(row, dotIndex)
+        dot:ClearAllPoints()
+        dot:SetPoint("LEFT", row, "LEFT", x, 0)
+        dot:SetSize(22, rowHeight)
+        dot.icon:SetVertexColor(1, 1, 1, groups[i].isBoss and 1 or 0.9)
+        dot.count:SetText("x"..groups[i].quantity)
+        dot.count:SetTextColor(1, 1, 1, 0.95)
+        dot:Show()
+        x = x + 25
+      end
+
+      if #groups > maxDots then
+        local dot = AcquirePullSidebarDot(row, dotIndex + 1)
+        dot:ClearAllPoints()
+        dot:SetPoint("LEFT", row, "LEFT", x, 0)
+        dot:SetSize(24, rowHeight)
+        dot.icon:SetVertexColor(1, 1, 1, 0.55)
+        dot.count:SetText("+"..(#groups - maxDots))
+        dot.count:SetTextColor(1, 1, 1, 0.9)
+        dot:Show()
+        dotIndex = dotIndex + 1
+      end
+
+      for i = dotIndex + 1, #row.dots do
+        row.dots[i]:Hide()
+      end
+    end
+
+    row:Show()
+  end
+
+  for i = #pulls + 1, #pullSidebarRows do
+    pullSidebarRows[i]:Hide()
+  end
+
+  ScrollPullSidebar(0)
+end
+
 local function IsLowerLeft(a, b)
   if a[1] < b[1] then return true end
   if a[1] > b[1] then return false end
@@ -733,8 +1053,9 @@ ApplySize = function(width)
   local viewportWidth = GetViewportWidth()
   local viewportHeight = GetViewportHeight()
   local showArtwork = UseFrameArtwork()
+  local sidebarTotalWidth = GetPullSidebarTotalWidth()
 
-  frame:SetSize(db.width, showArtwork and (HEADER_HEIGHT + viewportHeight + PADDING) or viewportHeight)
+  frame:SetSize(db.width + sidebarTotalWidth, showArtwork and (HEADER_HEIGHT + viewportHeight + PADDING) or viewportHeight)
   canvas:SetSize(viewportWidth, viewportHeight)
   ApplyFrameArtwork()
   LayoutTiles()
@@ -744,6 +1065,9 @@ end
 
 local function ShowStatus(message)
   ResetDrawnRoute()
+  if UpdatePullSidebar then
+    UpdatePullSidebar(nil, nil)
+  end
   statusText:SetText(message or "")
   statusText:Show()
 end
@@ -1027,6 +1351,7 @@ local function Refresh()
   ApplyMapAlpha()
   HideStatus()
   DrawRoute(mdtDB, preset)
+  UpdatePullSidebar(mdtDB, preset)
 end
 
 local function BuildSignature()
@@ -1059,6 +1384,9 @@ local function BuildSignature()
     tostring(db.showRouteLines),
     tostring(db.showFrameArtwork),
     tostring(db.onlyShowInMatchingDungeon),
+    tostring(db.showPullSidebar),
+    tostring(db.pullSidebarNumbersOnly),
+    tostring(db.showPullPercent),
     tostring(db.alpha),
     tostring(db.iconAlpha),
     tostring(activeLayoutDungeonIdx),
@@ -1162,7 +1490,7 @@ local function SetBooleanOption(key, value, silent)
       activeLayoutDungeonIdx = nil
     end
     UpdateOverlayVisibility(true)
-  elseif key == "showFrameArtwork" then
+  elseif key == "showFrameArtwork" or key == "showPullSidebar" or key == "pullSidebarNumbersOnly" or key == "showPullPercent" then
     ApplySize(db.width)
     RefreshIfNeeded(true)
   else
@@ -1170,8 +1498,6 @@ local function SetBooleanOption(key, value, silent)
     RefreshIfNeeded(true)
   end
 end
-
-local UpdatePullDropdown
 
 RefreshSettingsWindow = function()
   if not settingsFrame or not db then return end
@@ -1191,7 +1517,6 @@ RefreshSettingsWindow = function()
   if settingsControls.iconAlphaSlider then
     settingsControls.iconAlphaSlider:SetValue(db.iconAlpha or DEFAULTS.iconAlpha)
   end
-  UpdatePullDropdown()
   settingsUpdating = false
 end
 
@@ -1257,7 +1582,7 @@ local function MakeNativeSlider(parent, label, minValue, maxValue, step, x, y, c
   return slider
 end
 
-local function SelectPull(pullIdx)
+SelectPull = function(pullIdx)
   pullIdx = tonumber(pullIdx)
   if not pullIdx then return end
 
@@ -1280,27 +1605,6 @@ local function SelectPull(pullIdx)
   RefreshSettingsWindow()
 end
 
-UpdatePullDropdown = function()
-  local dropdown = settingsControls.pullDropdown
-  if not dropdown then return end
-
-  local preset = GetCurrentPreset()
-  local pulls = preset and preset.value and preset.value.pulls
-  local currentPull = preset and preset.value and preset.value.currentPull
-  local pullCount = type(pulls) == "table" and #pulls or 0
-
-  if pullCount <= 0 then
-    UIDropDownMenu_SetText(dropdown, "No route")
-    return
-  end
-
-  currentPull = tonumber(currentPull) or 1
-  if currentPull < 1 or currentPull > pullCount then
-    currentPull = 1
-  end
-  UIDropDownMenu_SetText(dropdown, "Pull "..currentPull)
-end
-
 local function CreateSettingsWindow()
   if settingsFrame then return end
 
@@ -1310,7 +1614,7 @@ local function CreateSettingsWindow()
   settingsFrame:SetMovable(true)
   settingsFrame:EnableMouse(true)
   settingsFrame:RegisterForDrag("LeftButton")
-  settingsFrame:SetSize(330, 518)
+  settingsFrame:SetSize(330, 536)
   settingsFrame:SetBackdrop({
     bgFile = "Interface\\Buttons\\WHITE8X8",
     edgeFile = "Interface\\Buttons\\WHITE8X8",
@@ -1350,74 +1654,41 @@ local function CreateSettingsWindow()
   MakeNativeCheck(settingsFrame, "Lock overlay position", "locked", 14, -66)
   MakeNativeCheck(settingsFrame, "Only show in matching dungeon", "onlyShowInMatchingDungeon", 14, -90)
   MakeNativeCheck(settingsFrame, "Show frame and title", "showFrameArtwork", 14, -114)
-  MakeNativeCheck(settingsFrame, "Show all pulls", "showAllPulls", 14, -148)
+  MakeNativeCheck(settingsFrame, "Show pull sidebar", "showPullSidebar", 14, -148)
+  MakeNativeCheck(settingsFrame, "Sidebar numbers only", "pullSidebarNumbersOnly", 14, -172)
+  MakeNativeCheck(settingsFrame, "Show pull percentages", "showPullPercent", 14, -196)
+  MakeNativeCheck(settingsFrame, "Show all pulls", "showAllPulls", 14, -230)
+  MakeNativeCheck(settingsFrame, "Show pull numbers on map", "showPullNumbers", 14, -254)
+  MakeNativeCheck(settingsFrame, "Show MDT-style pull outlines", "showPullOutlines", 14, -278)
+  MakeNativeCheck(settingsFrame, "Show route connection lines", "showRouteLines", 14, -302)
 
-  local pullLabel = settingsFrame:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
-  pullLabel:SetPoint("TOPLEFT", settingsFrame, "TOPLEFT", 18, -178)
-  pullLabel:SetText("Selected pull")
-
-  local pullDropdown = CreateFrame("Frame", NextControlName("PullDropdown"), settingsFrame, "UIDropDownMenuTemplate")
-  pullDropdown:SetPoint("TOPLEFT", settingsFrame, "TOPLEFT", -2, -194)
-  UIDropDownMenu_SetWidth(pullDropdown, 130)
-  UIDropDownMenu_Initialize(pullDropdown, function(_, level)
-    if level ~= 1 then return end
-
-    local preset = GetCurrentPreset()
-    local pulls = preset and preset.value and preset.value.pulls
-    local currentPull = tonumber(preset and preset.value and preset.value.currentPull) or 1
-    local pullCount = type(pulls) == "table" and #pulls or 0
-    if pullCount <= 0 then
-      local info = UIDropDownMenu_CreateInfo()
-      info.text = "No route"
-      info.disabled = true
-      UIDropDownMenu_AddButton(info, level)
-      return
-    end
-
-    for i = 1, pullCount do
-      local pullIdx = i
-      local info = UIDropDownMenu_CreateInfo()
-      info.text = "Pull "..pullIdx
-      info.checked = pullIdx == currentPull
-      info.func = function()
-        SelectPull(pullIdx)
-      end
-      UIDropDownMenu_AddButton(info, level)
-    end
-  end)
-  settingsControls.pullDropdown = pullDropdown
-
-  MakeNativeCheck(settingsFrame, "Show pull numbers", "showPullNumbers", 14, -240)
-  MakeNativeCheck(settingsFrame, "Show MDT-style pull outlines", "showPullOutlines", 14, -264)
-  MakeNativeCheck(settingsFrame, "Show route connection lines", "showRouteLines", 14, -288)
-
-  settingsControls.widthSlider = MakeNativeSlider(settingsFrame, "Overlay width", MIN_WIDTH, MAX_WIDTH, 1, 22, -334, function(value)
+  settingsControls.widthSlider = MakeNativeSlider(settingsFrame, "Overlay width", MIN_WIDTH, MAX_WIDTH, 1, 22, -348, function(value)
     ApplySize(value)
     SavePosition()
     RequestRefresh()
     RefreshIfNeeded(true)
   end)
 
-  settingsControls.alphaSlider = MakeNativeSlider(settingsFrame, "Map alpha", 0.2, 1, 0.05, 22, -388, function(value)
+  settingsControls.alphaSlider = MakeNativeSlider(settingsFrame, "Map alpha", 0.2, 1, 0.05, 22, -402, function(value)
     db.alpha = Clamp(value, 0.2, 1)
     ApplyMapAlpha()
     SaveActiveDungeonLayout()
   end)
 
-  settingsControls.iconAlphaSlider = MakeNativeSlider(settingsFrame, "Icon alpha", 0.2, 1, 0.05, 22, -442, function(value)
+  settingsControls.iconAlphaSlider = MakeNativeSlider(settingsFrame, "Icon alpha", 0.2, 1, 0.05, 22, -456, function(value)
     db.iconAlpha = Clamp(value, 0.2, 1)
     SaveActiveDungeonLayout()
     RequestRefresh()
     RefreshIfNeeded(true)
   end)
 
-  MakeNativeButton(settingsFrame, "Reset Position", 14, -484, 120, function()
+  MakeNativeButton(settingsFrame, "Reset Position", 14, -498, 120, function()
     ResetPosition()
     RequestRefresh()
     RefreshIfNeeded(true)
     RefreshSettingsWindow()
   end)
-  MakeNativeButton(settingsFrame, "Hide Overlay", 144, -484, 120, function()
+  MakeNativeButton(settingsFrame, "Hide Overlay", 144, -498, 120, function()
     SetBooleanOption("shown", false, true)
     RefreshSettingsWindow()
   end)
@@ -1448,34 +1719,16 @@ ShowContextMenu = function(anchor)
     contextMenuFrame = CreateFrame("Frame", "MDTMiniRouteContextMenu", UIParent, "UIDropDownMenuTemplate")
   end
 
-  local pullMenu = {}
-  local preset = GetCurrentPreset()
-  local pulls = preset and preset.value and preset.value.pulls
-  local currentPull = tonumber(preset and preset.value and preset.value.currentPull) or 1
-  local pullCount = type(pulls) == "table" and #pulls or 0
-  if pullCount > 0 then
-    for i = 1, pullCount do
-      local pullIdx = i
-      pullMenu[#pullMenu + 1] = {
-        text = "Pull "..pullIdx,
-        checked = pullIdx == currentPull,
-        func = function()
-          SelectPull(pullIdx)
-        end,
-      }
-    end
-  else
-    pullMenu[1] = { text = "No route", disabled = true, notCheckable = true }
-  end
-
   local menu = {
     { text = TITLE, isTitle = true, notCheckable = true },
     { text = "Options", notCheckable = true, func = function() ShowSettingsWindow(false) end },
-    { text = "Selected pull", hasArrow = true, notCheckable = true, menuList = pullMenu },
     { text = db.shown and "Hide overlay" or "Show overlay", notCheckable = true, func = ToggleShown },
     { text = db.locked and "Unlock overlay" or "Lock overlay", notCheckable = true, func = function() SetLocked(not db.locked) RefreshSettingsWindow() end },
     { text = "Only show in matching dungeon", checked = db.onlyShowInMatchingDungeon, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("onlyShowInMatchingDungeon") end },
     { text = "Show frame and title", checked = db.showFrameArtwork, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showFrameArtwork") end },
+    { text = "Show pull sidebar", checked = db.showPullSidebar, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showPullSidebar") end },
+    { text = "Sidebar numbers only", checked = db.pullSidebarNumbersOnly, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("pullSidebarNumbersOnly") end },
+    { text = "Show pull percentages", checked = db.showPullPercent, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showPullPercent") end },
     { text = "Show all pulls", checked = db.showAllPulls, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showAllPulls") end },
     { text = "Show pull numbers", checked = db.showPullNumbers, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showPullNumbers") end },
     { text = "Show pull outlines", checked = db.showPullOutlines, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showPullOutlines") end },
@@ -1611,6 +1864,18 @@ local function HandleSlash(input)
     SetBooleanOption("onlyShowInMatchingDungeon", not db.onlyShowInMatchingDungeon, false)
     RefreshSettingsWindow()
     Print(db.onlyShowInMatchingDungeon and "only showing in matching dungeon" or "showing outside dungeons too")
+  elseif command == "sidebar" then
+    SetBooleanOption("showPullSidebar", not db.showPullSidebar, false)
+    RefreshSettingsWindow()
+    Print(db.showPullSidebar and "pull sidebar shown" or "pull sidebar hidden")
+  elseif command == "compact" or command == "numbersonly" then
+    SetBooleanOption("pullSidebarNumbersOnly", not db.pullSidebarNumbersOnly, false)
+    RefreshSettingsWindow()
+    Print(db.pullSidebarNumbersOnly and "sidebar compact numbers only" or "sidebar mob dots shown")
+  elseif command == "percent" or command == "percents" then
+    SetBooleanOption("showPullPercent", not db.showPullPercent, false)
+    RefreshSettingsWindow()
+    Print(db.showPullPercent and "pull percentages shown" or "pull percentages hidden")
   elseif command == "size" then
     local size = tonumber(rest)
     if size then
@@ -1645,7 +1910,7 @@ local function HandleSlash(input)
     ResetPosition()
     RefreshIfNeeded(true)
   else
-    Print("/mdtmini options | toggle | show | hide | lock | unlock | pull <number> | all | outlines | lines | numbers | frame | dungeon | size <width> | alpha <0.2-1> | iconalpha <0.2-1> | reset")
+    Print("/mdtmini options | toggle | show | hide | lock | unlock | pull <number> | all | outlines | lines | numbers | frame | dungeon | sidebar | compact | percent | size <width> | alpha <0.2-1> | iconalpha <0.2-1> | reset")
   end
 end
 
@@ -1741,6 +2006,32 @@ local function CreateOverlay()
   mapBg:SetAllPoints()
   mapBg:SetColorTexture(0, 0, 0, 0.65)
 
+  pullSidebar = CreateFrame("Frame", nil, frame, "BackdropTemplate")
+  pullSidebar:SetBackdrop({
+    bgFile = "Interface\\Buttons\\WHITE8X8",
+    edgeFile = "Interface\\Buttons\\WHITE8X8",
+    edgeSize = 1,
+  })
+  pullSidebar:SetBackdropColor(0.015, 0.018, 0.022, 0.72)
+  pullSidebar:SetBackdropBorderColor(0, 0, 0, 0.75)
+  pullSidebar:EnableMouse(true)
+  pullSidebar:EnableMouseWheel(true)
+  pullSidebar:SetScript("OnMouseWheel", function(_, delta)
+    ScrollPullSidebar(delta)
+  end)
+
+  pullSidebarScroll = CreateFrame("ScrollFrame", nil, pullSidebar)
+  pullSidebarScroll:SetPoint("TOPLEFT", pullSidebar, "TOPLEFT", 2, -2)
+  pullSidebarScroll:SetPoint("BOTTOMRIGHT", pullSidebar, "BOTTOMRIGHT", -2, 2)
+  pullSidebarScroll:EnableMouseWheel(true)
+  pullSidebarScroll:SetScript("OnMouseWheel", function(_, delta)
+    ScrollPullSidebar(delta)
+  end)
+
+  pullSidebarContent = CreateFrame("Frame", nil, pullSidebarScroll)
+  pullSidebarContent:SetPoint("TOPLEFT", pullSidebarScroll, "TOPLEFT", 0, 0)
+  pullSidebarScroll:SetScrollChild(pullSidebarContent)
+
   canvas = CreateFrame("Frame", nil, mapViewport)
   mapViewport:SetScrollChild(canvas)
 
@@ -1787,6 +2078,9 @@ local function Initialize()
   db.iconAlpha = Clamp(db.iconAlpha, 0.2, 1)
   db.showFrameArtwork = db.showFrameArtwork ~= false
   db.onlyShowInMatchingDungeon = db.onlyShowInMatchingDungeon == true
+  db.showPullSidebar = db.showPullSidebar ~= false
+  db.pullSidebarNumbersOnly = db.pullSidebarNumbersOnly == true
+  db.showPullPercent = db.showPullPercent ~= false
   if type(db.dungeonLayouts) ~= "table" then
     db.dungeonLayouts = {}
   end

@@ -2,9 +2,9 @@
 
 A small World of Warcraft companion addon/plugin for Mythic Dungeon Tools.
 
-It adds a movable mini overlay that shows the current MDT dungeon map, MDT-style pull outlines, pull colors, and selected/current pull.
+It adds a movable mini overlay that shows the current MDT dungeon map, MDT-style pull outlines, pull colors, selected/current pull, and an optional clickable pull sidebar.
 
-Mini Route is a separate addon and does not edit Mythic Dungeon Tools files. It opens its own floating options window alongside MDT instead of injecting controls into MDT's settings page. The options include separate map and icon alpha controls, a clean frame/title toggle, and an optional dungeon-only mode with per-dungeon layouts.
+Mini Route is a separate addon and does not edit Mythic Dungeon Tools files. It opens its own floating options window alongside MDT instead of injecting controls into MDT's settings page. The options include separate map and icon alpha controls, a clean frame/title toggle, a clickable pull sidebar with compact modes, and an optional dungeon-only mode with per-dungeon layouts.
 
 ## Requirements
 
@@ -32,11 +32,14 @@ The current `.toc` includes interface `120007`.
 - `/mdtmini numbers` toggles pull numbers.
 - `/mdtmini frame` toggles the overlay frame, title, and background artwork.
 - `/mdtmini dungeon` toggles only showing the overlay inside the matching dungeon. When enabled, position, width, alpha, icon alpha, and frame/title visibility are saved per dungeon.
+- `/mdtmini sidebar` toggles the clickable pull sidebar.
+- `/mdtmini compact` toggles sidebar numbers-only mode.
+- `/mdtmini percent` toggles sidebar percentages.
 - `/mdtmini size 348` sets overlay width.
 - `/mdtmini alpha 0.85` sets map transparency.
 - `/mdtmini iconalpha 0.85` sets route marker transparency.
 - `/mdtmini reset` resets size and position.
 
-Use the floating options window or right-click menu to choose the selected pull. Drag the title bar, or the map itself when the frame/title is hidden, to move it. Mouse wheel over the overlay resizes it.
+Click the pull sidebar to choose the selected pull. Mouse wheel over the sidebar scrolls it. Drag the title bar, or the map itself when the frame/title is hidden, to move it. Mouse wheel over the overlay resizes it.
 
 When `/mdt` opens, Mini Route opens its own options window.
