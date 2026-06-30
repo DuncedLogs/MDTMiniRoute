@@ -25,7 +25,9 @@ local DEFAULTS = {
   showPullOutlines = true,
   showPullNumbers = true,
   showRouteLines = false,
+  showFrameArtwork = true,
   alpha = 0.95,
+  iconAlpha = 1,
   width = 348,
   point = "BOTTOMLEFT",
   relativePoint = "BOTTOMLEFT",
@@ -53,8 +55,11 @@ local FALLBACK_COLORS = {
 local db
 local frame
 local header
+local headerTexture
 local titleText
+local closeButton
 local mapViewport
+local mapBg
 local canvas
 local statusText
 local settingsFrame
@@ -104,6 +109,83 @@ local function Clamp(value, minValue, maxValue)
   if value < minValue then return minValue end
   if value > maxValue then return maxValue end
   return value
+end
+
+local function UseFrameArtwork()
+  return not db or db.showFrameArtwork ~= false
+end
+
+local function RouteAlpha(alpha)
+  return (alpha or 1) * Clamp(db and db.iconAlpha or DEFAULTS.iconAlpha, 0.2, 1)
+end
+
+local function GetViewportWidth()
+  local width = db and db.width or DEFAULTS.width
+  if UseFrameArtwork() then
+    return width - (PADDING * 2)
+  end
+  return width
+end
+
+local function GetViewportHeight()
+  return GetViewportWidth() * (MAP_HEIGHT / MAP_WIDTH)
+end
+
+local function ApplyMapAlpha()
+  if not db then return end
+
+  db.alpha = Clamp(db.alpha, 0.2, 1)
+  for i = 1, #smallTiles do
+    smallTiles[i]:SetAlpha(db.alpha)
+  end
+  for row = 1, #largeTiles do
+    for col = 1, #(largeTiles[row] or {}) do
+      largeTiles[row][col]:SetAlpha(db.alpha)
+    end
+  end
+  if mapBg then
+    mapBg:SetAlpha(UseFrameArtwork() and db.alpha or 0)
+  end
+end
+
+local function ApplyFrameArtwork()
+  if not frame or not db then return end
+
+  local showArtwork = UseFrameArtwork()
+  if showArtwork then
+    frame:SetBackdropColor(0.02, 0.025, 0.03, 0.82)
+    frame:SetBackdropBorderColor(0, 0, 0, 0.85)
+    if header then header:Show() end
+    if headerTexture then headerTexture:Show() end
+    if titleText then titleText:Show() end
+    if closeButton then closeButton:Show() end
+    if mapBg then
+      mapBg:SetColorTexture(0, 0, 0, 0.65)
+    end
+  else
+    frame:SetBackdropColor(0, 0, 0, 0)
+    frame:SetBackdropBorderColor(0, 0, 0, 0)
+    if header then header:Hide() end
+    if headerTexture then headerTexture:Hide() end
+    if titleText then titleText:Hide() end
+    if closeButton then closeButton:Hide() end
+    if mapBg then
+      mapBg:SetColorTexture(0, 0, 0, 0)
+    end
+  end
+
+  if mapViewport then
+    mapViewport:ClearAllPoints()
+    if showArtwork then
+      mapViewport:SetPoint("TOPLEFT", frame, "TOPLEFT", PADDING, -HEADER_HEIGHT)
+      mapViewport:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -PADDING, PADDING)
+    else
+      mapViewport:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0)
+      mapViewport:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 0)
+    end
+  end
+
+  ApplyMapAlpha()
 end
 
 local function RequestRefresh()
@@ -297,7 +379,7 @@ local function DrawLine(x1, y1, x2, y2, scale, r, g, b, a, thickness)
   if length < 2 then return end
 
   local line = AcquireLine()
-  line:SetVertexColor(r, g, b, a)
+  line:SetVertexColor(r, g, b, RouteAlpha(a))
   line:SetSize(length, thickness)
   line:SetPoint("CENTER", canvas, "TOPLEFT", (sx + ex) / 2, (sy + ey) / 2)
   line:SetRotation(math.atan2(dy, dx))
@@ -306,7 +388,7 @@ end
 local function DrawDot(x, y, scale, r, g, b, a, size)
   local dot = AcquireDot()
   dot:SetSize(size, size)
-  dot:SetVertexColor(r, g, b, a)
+  dot:SetVertexColor(r, g, b, RouteAlpha(a))
   dot:SetPoint("CENTER", canvas, "TOPLEFT", x * scale, y * scale)
 end
 
@@ -318,7 +400,7 @@ local function DrawMarker(x, y, scale, pullIdx, r, g, b, active, selected)
 
   marker:SetSize(scaledSize, scaledSize)
   marker:SetPoint("CENTER", canvas, "TOPLEFT", x * scale, y * scale)
-  marker:SetAlpha(alpha)
+  marker:SetAlpha(RouteAlpha(alpha))
   marker.icon:SetVertexColor(r, g, b, 0.92)
   marker.text:SetText(pullIdx)
   marker.text:SetTextColor(1, 1, 1, 1)
@@ -341,7 +423,7 @@ local function DrawEnemyIcon(enemy, clone, scale, pullInfo, selected)
 
   enemyIcon:SetSize(size, size)
   enemyIcon:SetPoint("CENTER", canvas, "TOPLEFT", clone.x * scale, clone.y * scale)
-  enemyIcon:SetAlpha(alpha)
+  enemyIcon:SetAlpha(RouteAlpha(alpha))
   enemyIcon.bg:SetVertexColor(r, g, b, pullInfo and 0.95 or 0.55)
 
   if db.showEnemyPortraits and enemy.displayId then
@@ -372,11 +454,11 @@ local function DrawPOI(poi, scale)
 
   if texture then
     icon:SetTexture(texture)
-    icon:SetVertexColor(1, 1, 1, 0.9)
+    icon:SetVertexColor(1, 1, 1, RouteAlpha(0.9))
   else
     icon:SetTexture(POI_FALLBACK_TEXTURE)
     icon:SetTexCoord(0, 0.25, 0, 0.25)
-    icon:SetVertexColor(0.35, 0.72, 1, 0.8)
+    icon:SetVertexColor(0.35, 0.72, 1, RouteAlpha(0.8))
   end
 end
 
@@ -471,7 +553,7 @@ end
 
 local function LayoutTiles()
   if not canvas or not db then return end
-  local viewportWidth = db.width - (PADDING * 2)
+  local viewportWidth = GetViewportWidth()
   local scale = viewportWidth / MAP_WIDTH
   local smallTileSize = (viewportWidth / 4) + (5 * scale)
   local largeTileSize = viewportWidth / 15
@@ -515,13 +597,13 @@ local function ApplySize(width)
   if not frame or not db then return end
 
   db.width = Clamp(width or db.width, MIN_WIDTH, MAX_WIDTH)
-  local viewportWidth = db.width - (PADDING * 2)
-  local viewportHeight = viewportWidth * (MAP_HEIGHT / MAP_WIDTH)
+  local viewportWidth = GetViewportWidth()
+  local viewportHeight = GetViewportHeight()
+  local showArtwork = UseFrameArtwork()
 
-  frame:SetSize(db.width, HEADER_HEIGHT + viewportHeight + PADDING)
-  mapViewport:SetPoint("TOPLEFT", frame, "TOPLEFT", PADDING, -HEADER_HEIGHT)
-  mapViewport:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -PADDING, PADDING)
+  frame:SetSize(db.width, showArtwork and (HEADER_HEIGHT + viewportHeight + PADDING) or viewportHeight)
   canvas:SetSize(viewportWidth, viewportHeight)
+  ApplyFrameArtwork()
   LayoutTiles()
   RequestRefresh()
 end
@@ -727,7 +809,7 @@ local function DrawRoute(mdtDB, preset)
     return
   end
 
-  local viewportWidth = db.width - (PADDING * 2)
+  local viewportWidth = GetViewportWidth()
   local scale = viewportWidth / MAP_WIDTH
   local currentPull = GetCurrentPull(preset)
   local selection = GetSelection(preset)
@@ -800,13 +882,15 @@ local function Refresh()
   end
 
   titleText:SetText(GetDungeonName(mdtDB))
-  frame:SetAlpha(db.alpha or DEFAULTS.alpha)
+  frame:SetAlpha(1)
+  ApplyFrameArtwork()
 
   if not UpdateMapTextures(mdtDB, preset) then
     ShowStatus("No map")
     return
   end
 
+  ApplyMapAlpha()
   HideStatus()
   DrawRoute(mdtDB, preset)
 end
@@ -839,6 +923,9 @@ local function BuildSignature()
     tostring(db.showPullOutlines),
     tostring(db.showPullNumbers),
     tostring(db.showRouteLines),
+    tostring(db.showFrameArtwork),
+    tostring(db.alpha),
+    tostring(db.iconAlpha),
     tostring(db.width),
   }, ":")
 end
@@ -939,6 +1026,9 @@ local function SetBooleanOption(key, value, silent)
     if SetLocked then
       SetLocked(db.locked, silent)
     end
+  elseif key == "showFrameArtwork" then
+    ApplySize(db.width)
+    RefreshIfNeeded(true)
   else
     RequestRefresh()
     RefreshIfNeeded(true)
@@ -961,6 +1051,9 @@ local function RefreshSettingsWindow()
   end
   if settingsControls.alphaSlider then
     settingsControls.alphaSlider:SetValue(db.alpha or DEFAULTS.alpha)
+  end
+  if settingsControls.iconAlphaSlider then
+    settingsControls.iconAlphaSlider:SetValue(db.iconAlpha or DEFAULTS.iconAlpha)
   end
   UpdatePullDropdown()
   settingsUpdating = false
@@ -1081,7 +1174,7 @@ local function CreateSettingsWindow()
   settingsFrame:SetMovable(true)
   settingsFrame:EnableMouse(true)
   settingsFrame:RegisterForDrag("LeftButton")
-  settingsFrame:SetSize(330, 410)
+  settingsFrame:SetSize(330, 494)
   settingsFrame:SetBackdrop({
     bgFile = "Interface\\Buttons\\WHITE8X8",
     edgeFile = "Interface\\Buttons\\WHITE8X8",
@@ -1119,14 +1212,15 @@ local function CreateSettingsWindow()
 
   MakeNativeCheck(settingsFrame, "Show mini route overlay", "shown", 14, -42)
   MakeNativeCheck(settingsFrame, "Lock overlay position", "locked", 14, -66)
-  MakeNativeCheck(settingsFrame, "Show all pulls", "showAllPulls", 14, -100)
+  MakeNativeCheck(settingsFrame, "Show frame and title", "showFrameArtwork", 14, -90)
+  MakeNativeCheck(settingsFrame, "Show all pulls", "showAllPulls", 14, -124)
 
   local pullLabel = settingsFrame:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
-  pullLabel:SetPoint("TOPLEFT", settingsFrame, "TOPLEFT", 18, -130)
+  pullLabel:SetPoint("TOPLEFT", settingsFrame, "TOPLEFT", 18, -154)
   pullLabel:SetText("Selected pull")
 
   local pullDropdown = CreateFrame("Frame", NextControlName("PullDropdown"), settingsFrame, "UIDropDownMenuTemplate")
-  pullDropdown:SetPoint("TOPLEFT", settingsFrame, "TOPLEFT", -2, -146)
+  pullDropdown:SetPoint("TOPLEFT", settingsFrame, "TOPLEFT", -2, -170)
   UIDropDownMenu_SetWidth(pullDropdown, 130)
   UIDropDownMenu_Initialize(pullDropdown, function(_, level)
     if level ~= 1 then return end
@@ -1156,31 +1250,35 @@ local function CreateSettingsWindow()
   end)
   settingsControls.pullDropdown = pullDropdown
 
-  MakeNativeCheck(settingsFrame, "Show pull numbers", "showPullNumbers", 14, -192)
-  MakeNativeCheck(settingsFrame, "Show MDT-style pull outlines", "showPullOutlines", 14, -216)
-  MakeNativeCheck(settingsFrame, "Show route connection lines", "showRouteLines", 14, -240)
+  MakeNativeCheck(settingsFrame, "Show pull numbers", "showPullNumbers", 14, -216)
+  MakeNativeCheck(settingsFrame, "Show MDT-style pull outlines", "showPullOutlines", 14, -240)
+  MakeNativeCheck(settingsFrame, "Show route connection lines", "showRouteLines", 14, -264)
 
-  settingsControls.widthSlider = MakeNativeSlider(settingsFrame, "Overlay width", MIN_WIDTH, MAX_WIDTH, 1, 22, -286, function(value)
+  settingsControls.widthSlider = MakeNativeSlider(settingsFrame, "Overlay width", MIN_WIDTH, MAX_WIDTH, 1, 22, -310, function(value)
     ApplySize(value)
     SavePosition()
     RequestRefresh()
     RefreshIfNeeded(true)
   end)
 
-  settingsControls.alphaSlider = MakeNativeSlider(settingsFrame, "Overlay alpha", 0.2, 1, 0.05, 22, -340, function(value)
+  settingsControls.alphaSlider = MakeNativeSlider(settingsFrame, "Map alpha", 0.2, 1, 0.05, 22, -364, function(value)
     db.alpha = Clamp(value, 0.2, 1)
-    if frame then
-      frame:SetAlpha(db.alpha)
-    end
+    ApplyMapAlpha()
   end)
 
-  MakeNativeButton(settingsFrame, "Reset Position", 14, -382, 120, function()
+  settingsControls.iconAlphaSlider = MakeNativeSlider(settingsFrame, "Icon alpha", 0.2, 1, 0.05, 22, -418, function(value)
+    db.iconAlpha = Clamp(value, 0.2, 1)
+    RequestRefresh()
+    RefreshIfNeeded(true)
+  end)
+
+  MakeNativeButton(settingsFrame, "Reset Position", 14, -460, 120, function()
     ResetPosition()
     RequestRefresh()
     RefreshIfNeeded(true)
     RefreshSettingsWindow()
   end)
-  MakeNativeButton(settingsFrame, "Hide Overlay", 144, -382, 120, function()
+  MakeNativeButton(settingsFrame, "Hide Overlay", 144, -460, 120, function()
     SetBooleanOption("shown", false, true)
     RefreshSettingsWindow()
   end)
@@ -1237,6 +1335,7 @@ ShowContextMenu = function(anchor)
     { text = "Selected pull", hasArrow = true, notCheckable = true, menuList = pullMenu },
     { text = db.shown and "Hide overlay" or "Show overlay", notCheckable = true, func = ToggleShown },
     { text = db.locked and "Unlock overlay" or "Lock overlay", notCheckable = true, func = function() SetLocked(not db.locked) RefreshSettingsWindow() end },
+    { text = "Show frame and title", checked = db.showFrameArtwork, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showFrameArtwork") end },
     { text = "Show all pulls", checked = db.showAllPulls, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showAllPulls") end },
     { text = "Show pull numbers", checked = db.showPullNumbers, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showPullNumbers") end },
     { text = "Show pull outlines", checked = db.showPullOutlines, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showPullOutlines") end },
@@ -1368,6 +1467,10 @@ local function HandleSlash(input)
     db.showPullNumbers = not db.showPullNumbers
     Print(db.showPullNumbers and "pull numbers on" or "pull numbers off")
     RefreshIfNeeded(true)
+  elseif command == "frame" or command == "chrome" then
+    SetBooleanOption("showFrameArtwork", not db.showFrameArtwork, false)
+    RefreshSettingsWindow()
+    Print(db.showFrameArtwork and "frame and title shown" or "frame and title hidden")
   elseif command == "size" then
     local size = tonumber(rest)
     if size then
@@ -1381,16 +1484,26 @@ local function HandleSlash(input)
     local alpha = tonumber(rest)
     if alpha then
       db.alpha = Clamp(alpha, 0.2, 1)
-      frame:SetAlpha(db.alpha)
-      Print("alpha "..db.alpha)
+      ApplyMapAlpha()
+      Print("map alpha "..db.alpha)
     else
       Print("usage: /mdtmini alpha 0.85")
+    end
+  elseif command == "iconalpha" or command == "iconsalpha" then
+    local alpha = tonumber(rest)
+    if alpha then
+      db.iconAlpha = Clamp(alpha, 0.2, 1)
+      RequestRefresh()
+      RefreshIfNeeded(true)
+      Print("icon alpha "..db.iconAlpha)
+    else
+      Print("usage: /mdtmini iconalpha 0.85")
     end
   elseif command == "reset" then
     ResetPosition()
     RefreshIfNeeded(true)
   else
-    Print("/mdtmini options | toggle | show | hide | lock | unlock | pull <number> | all | outlines | lines | numbers | size <width> | alpha <0.2-1> | reset")
+    Print("/mdtmini options | toggle | show | hide | lock | unlock | pull <number> | all | outlines | lines | numbers | frame | size <width> | alpha <0.2-1> | iconalpha <0.2-1> | reset")
   end
 end
 
@@ -1400,8 +1513,9 @@ local function CreateOverlay()
   frame:SetClampedToScreen(true)
   frame:SetMovable(not db.locked)
   frame:EnableMouse(true)
+  frame:EnableMouseWheel(true)
   frame:SetResizable(false)
-  frame:SetAlpha(db.alpha or DEFAULTS.alpha)
+  frame:SetAlpha(1)
   frame:SetBackdrop({
     bgFile = "Interface\\Buttons\\WHITE8X8",
     edgeFile = "Interface\\Buttons\\WHITE8X8",
@@ -1437,7 +1551,7 @@ local function CreateOverlay()
     RefreshIfNeeded(true)
   end)
 
-  local headerTexture = header:CreateTexture(nil, "BACKGROUND")
+  headerTexture = header:CreateTexture(nil, "BACKGROUND")
   headerTexture:SetAllPoints()
   headerTexture:SetColorTexture(0.035, 0.045, 0.06, 0.92)
 
@@ -1447,18 +1561,32 @@ local function CreateOverlay()
   titleText:SetJustifyH("LEFT")
   titleText:SetText(TITLE)
 
-  local close = CreateFrame("Button", nil, header)
-  close:SetPoint("RIGHT", header, "RIGHT", -2, 0)
-  close:SetSize(18, 18)
-  close:SetNormalTexture("Interface\\Buttons\\UI-Panel-MinimizeButton-Up")
-  close:SetPushedTexture("Interface\\Buttons\\UI-Panel-MinimizeButton-Down")
-  close:SetHighlightTexture("Interface\\Buttons\\UI-Panel-MinimizeButton-Highlight")
-  close:SetScript("OnClick", ToggleShown)
+  closeButton = CreateFrame("Button", nil, header)
+  closeButton:SetPoint("RIGHT", header, "RIGHT", -2, 0)
+  closeButton:SetSize(18, 18)
+  closeButton:SetNormalTexture("Interface\\Buttons\\UI-Panel-MinimizeButton-Up")
+  closeButton:SetPushedTexture("Interface\\Buttons\\UI-Panel-MinimizeButton-Down")
+  closeButton:SetHighlightTexture("Interface\\Buttons\\UI-Panel-MinimizeButton-Highlight")
+  closeButton:SetScript("OnClick", ToggleShown)
 
-  frame:SetScript("OnMouseUp", function(_, button)
-    if button == "RightButton" then
+  frame:SetScript("OnMouseDown", function(_, button)
+    if button == "LeftButton" and not db.locked then
+      frame:StartMoving()
+    elseif button == "RightButton" then
       ShowContextMenu(frame)
     end
+  end)
+  frame:SetScript("OnMouseUp", function(_, button)
+    if button == "LeftButton" then
+      frame:StopMovingOrSizing()
+      SavePosition()
+    end
+  end)
+  frame:SetScript("OnMouseWheel", function(_, delta)
+    local step = IsShiftKeyDown() and 8 or 24
+    ApplySize((db.width or DEFAULTS.width) + (delta > 0 and step or -step))
+    SavePosition()
+    RefreshIfNeeded(true)
   end)
 
   mapViewport = CreateFrame("ScrollFrame", nil, frame)
@@ -1467,7 +1595,7 @@ local function CreateOverlay()
     mapViewport:SetClipsChildren(true)
   end
 
-  local mapBg = mapViewport:CreateTexture(nil, "BACKGROUND")
+  mapBg = mapViewport:CreateTexture(nil, "BACKGROUND")
   mapBg:SetAllPoints()
   mapBg:SetColorTexture(0, 0, 0, 0.65)
 
@@ -1518,6 +1646,8 @@ local function Initialize()
   db = MDTMiniRouteDB
   db.width = Clamp(db.width, MIN_WIDTH, MAX_WIDTH)
   db.alpha = Clamp(db.alpha, 0.2, 1)
+  db.iconAlpha = Clamp(db.iconAlpha, 0.2, 1)
+  db.showFrameArtwork = db.showFrameArtwork ~= false
   db.showEnemies = false
   db.showEnemyPortraits = false
   db.showUnpulledEnemies = false

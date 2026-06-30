@@ -4,7 +4,7 @@ A small World of Warcraft companion addon/plugin for Mythic Dungeon Tools.
 
 It adds a movable mini overlay that shows the current MDT dungeon map, MDT-style pull outlines, pull colors, and selected/current pull.
 
-Mini Route is a separate addon and does not edit Mythic Dungeon Tools files. It opens its own floating options window alongside MDT instead of injecting controls into MDT's settings page.
+Mini Route is a separate addon and does not edit Mythic Dungeon Tools files. It opens its own floating options window alongside MDT instead of injecting controls into MDT's settings page. The options include separate map and icon alpha controls plus a clean frame/title toggle.
 
 ## Requirements
 
@@ -30,10 +30,12 @@ The current `.toc` includes interface `120007`.
 - `/mdtmini outlines` toggles MDT-style pull outlines.
 - `/mdtmini lines` toggles route connection lines.
 - `/mdtmini numbers` toggles pull numbers.
+- `/mdtmini frame` toggles the overlay frame, title, and background artwork.
 - `/mdtmini size 348` sets overlay width.
-- `/mdtmini alpha 0.85` sets transparency.
+- `/mdtmini alpha 0.85` sets map transparency.
+- `/mdtmini iconalpha 0.85` sets route marker transparency.
 - `/mdtmini reset` resets size and position.
 
-Use the floating options window or right-click menu to choose the selected pull. Drag the top bar to move it. Mouse wheel over the top bar resizes it.
+Use the floating options window or right-click menu to choose the selected pull. Drag the title bar, or the map itself when the frame/title is hidden, to move it. Mouse wheel over the overlay resizes it.
 
 When `/mdt` opens, Mini Route opens its own options window.
