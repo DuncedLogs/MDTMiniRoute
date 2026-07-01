@@ -2,7 +2,7 @@
 
 A small World of Warcraft companion addon/plugin for Mythic Dungeon Tools.
 
-It adds a movable mini overlay that shows the current MDT dungeon map, MDT-style pull outlines, pull colors, selected/current pull, optional map mob dots, and an optional clickable pull sidebar.
+Adds a movable mini overlay that shows the current MDT dungeon map, MDT-style pull outlines, pull colors, selected/current pull, optional map mob dots, and an optional clickable pull sidebar.
 
 Mini Route is a separate addon and does not edit Mythic Dungeon Tools files. It opens its own floating options window alongside MDT instead of injecting controls into MDT's settings page. The options include separate map and icon alpha controls, separate sidebar and minimap pull-number font controls, a clean frame/title toggle, a configurable clickable pull sidebar, and an optional dungeon-only mode with per-dungeon layouts.
 
@@ -10,8 +10,6 @@ Mini Route is a separate addon and does not edit Mythic Dungeon Tools files. It 
 
 - World of Warcraft retail or Mists client supported by the installed MDT version
 - Mythic Dungeon Tools
-
-The current `.toc` includes interface `120007`.
 
 ## Install
 
@@ -22,6 +20,7 @@ The current `.toc` includes interface `120007`.
 
 ## Commands
 
+Options open on right click or /mdt
 - `/mdtmini` toggles the overlay.
 - `/mdtmini options` opens the floating options window.
 - `/mdtmini lock` locks movement.
@@ -45,6 +44,11 @@ The current `.toc` includes interface `120007`.
 - `/mdtmini iconalpha 0.85` sets route marker transparency.
 - `/mdtmini reset` resets size and position.
 
-Click the pull sidebar to choose the selected pull. The fixed `All Pulls` button at the top of the sidebar toggles all pulls vs selected/current pull only without scrolling away, and also works as the detached sidebar drag handle when `Lock detached sidebar` is off. The font pickers use LibSharedMedia fonts when available and include built-in Blizzard/ElvUI fallback choices; outline buttons cycle between thin, thick, and none. Mouse wheel over the sidebar scrolls it. Drag the title bar, or the map itself when the frame/title is hidden, to move the overlay. Mouse wheel over the overlay resizes it.
+Click the pull sidebar to choose the selected pull. The fixed `All Pulls` button at the top of the sidebar toggles all pulls vs selected/current pull only without scrolling away, and also works as the detached sidebar drag handle when `Lock detached sidebar` is off. 
 
-When `/mdt` opens, Mini Route opens its own options window.
+The font pickers use LibSharedMedia fonts when available and include built-in Blizzard/ElvUI fallback choices; outline buttons cycle between thin, thick, and none.
+- Mouse wheel over the sidebar scrolls it. 
+- Drag the title bar, or the map itself when the frame/title is hidden, to move the overlay.
+-Mouse wheel over the overlay resizes it.
+
+I used Codex Pro for creating this addon
