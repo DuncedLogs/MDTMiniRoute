@@ -1,6 +1,6 @@
 local ADDON_NAME = ...
 
-local TITLE = "MDT Mini Route"
+local TITLE = "MDTMiniRoute"
 local MAP_WIDTH = 840
 local MAP_HEIGHT = 555
 local HEADER_HEIGHT = 22
@@ -53,6 +53,23 @@ local DEFAULTS = {
   showPullNumbers = true,
   showRouteLines = false,
   showFrameArtwork = true,
+  showOnMouseoverOnly = false,
+  onlyShowOutOfCombat = false,
+  autoSelectPull = false,
+  autoPullUseProximity = false,
+  autoPullProximityRadius = 85,
+  autoPullDriftWatcher = true,
+  autoPullDriftThreshold = 6,
+  autoPullAnchorActive = false,
+  autoPullAnchorPull = 0,
+  autoPullTrashOffset = 0,
+  autoPullBossOffset = 0,
+  recoveryMode = false,
+  showRecoveryButton = true,
+  recoveryButtonMouseoverOnly = false,
+  recoveryButtonBorderStyle = "ARTWORK",
+  recoveryButtonBorderSize = 3,
+  recoveryButtonBorderColor = { 0.15, 0.85, 1 },
   onlyShowInMatchingDungeon = false,
   showPullSidebar = true,
   showPullPercent = true,
@@ -141,10 +158,11 @@ local ResetPosition, ToggleShown, SetLocked, ShowSettingsWindow, ShowContextMenu
 local SaveActiveDungeonLayout, UpdateOverlayVisibility
 local ApplySize, RefreshIfNeeded, RefreshSettingsWindow
 local SelectPull, UpdatePullSidebar, LayoutPullSidebar, UpdatePullSidebarHeader
+local UpdateAutoPullFromProgress
 local UpdateFontSettingControls
 
 local function Print(msg)
-  DEFAULT_CHAT_FRAME:AddMessage("|cff66ccffMDT Mini Route:|r "..msg)
+  DEFAULT_CHAT_FRAME:AddMessage("|cff66ccffMDTMiniRoute:|r "..msg)
 end
 
 local function CopyDefaults(defaults, target)
@@ -178,6 +196,54 @@ end
 
 local function RouteAlpha(alpha)
   return (alpha or 1) * Clamp(db and db.iconAlpha or DEFAULTS.iconAlpha, 0.2, 1)
+end
+
+local function IsPlayerInCombat()
+  return (InCombatLockdown and InCombatLockdown()) or (UnitAffectingCombat and UnitAffectingCombat("player"))
+end
+
+local function FrameIsMouseOver(target)
+  if not target or not target:IsShown() then return false end
+  if target.IsMouseOver then
+    return target:IsMouseOver()
+  end
+  if MouseIsOver then
+    return MouseIsOver(target)
+  end
+  return false
+end
+
+local function OverlayIsMouseOver()
+  return FrameIsMouseOver(frame) or FrameIsMouseOver(pullSidebar)
+end
+
+local function ApplyOverlayVisualAlpha()
+  if not frame or not db then return end
+
+  local visible = db.showOnMouseoverOnly ~= true or OverlayIsMouseOver()
+  local alpha = visible and 1 or 0
+  frame:SetAlpha(alpha)
+
+  if pullSidebar then
+    pullSidebar:SetAlpha((db.pullSidebarDetached and db.showOnMouseoverOnly == true) and alpha or 1)
+  end
+  if MDTMiniRouteApplyRecoveryButtonAppearance then
+    MDTMiniRouteApplyRecoveryButtonAppearance()
+  end
+end
+
+local function QueueOverlayVisualAlpha()
+  if C_Timer and C_Timer.After then
+    C_Timer.After(0.05, ApplyOverlayVisualAlpha)
+  else
+    ApplyOverlayVisualAlpha()
+  end
+end
+
+local function WatchOverlayMouseover(target)
+  if not target or not target.HookScript then return end
+  target:HookScript("OnEnter", ApplyOverlayVisualAlpha)
+  target:HookScript("OnLeave", QueueOverlayVisualAlpha)
 end
 
 local function GetLibSharedMedia()
@@ -416,6 +482,7 @@ local function ApplyFrameArtwork()
   end
 
   ApplyMapAlpha()
+  ApplyOverlayVisualAlpha()
 end
 
 local function RequestRefresh()
@@ -589,9 +656,9 @@ UpdateOverlayVisibility = function(force)
   if db.onlyShowInMatchingDungeon then
     local matches, routeDungeonIdx = IsInMatchingDungeon()
     canShow = canShow and matches == true
-    if canShow then
+    if db.shown == true and matches == true then
       SwitchDungeonLayout(routeDungeonIdx)
-    elseif activeLayoutDungeonIdx then
+    elseif matches ~= true and activeLayoutDungeonIdx then
       SaveDungeonLayout(activeLayoutDungeonIdx)
       activeLayoutDungeonIdx = nil
     end
@@ -600,9 +667,14 @@ UpdateOverlayVisibility = function(force)
     activeLayoutDungeonIdx = nil
   end
 
+  if canShow and db.onlyShowOutOfCombat == true and IsPlayerInCombat() then
+    canShow = false
+  end
+
   if canShow then
     frame:Show()
     RefreshIfNeeded(force == true)
+    ApplyOverlayVisualAlpha()
   else
     frame:Hide()
     if pullSidebar then
@@ -668,6 +740,9 @@ local function ResetDrawnRoute()
   usedDots = 0
   usedEnemies = 0
   usedPOIs = 0
+  if MDTMiniRouteResetHitFrames then
+    MDTMiniRouteResetHitFrames()
+  end
 
   for i = 1, #linePool do
     linePool[i]:Hide()
@@ -789,6 +864,7 @@ local function DrawDot(x, y, scale, r, g, b, a, size)
   dot:SetSize(size, size)
   dot:SetVertexColor(r, g, b, RouteAlpha(a))
   dot:SetPoint("CENTER", canvas, "TOPLEFT", x * scale, y * scale)
+  return dot
 end
 
 local function DrawMarker(x, y, scale, pullIdx, r, g, b, active, selected)
@@ -952,6 +1028,879 @@ end
 local function FormatPercent(forces, maxForces)
   if not maxForces or maxForces <= 0 then return "" end
   return string.format("%.2f%%", (forces / maxForces) * 100)
+end
+
+MDTMiniRouteRecoveryState = MDTMiniRouteRecoveryState or { undo = {}, redo = {} }
+
+function MDTMiniRouteDeepCopy(value, seen)
+  if type(value) ~= "table" then return value end
+  seen = seen or {}
+  if seen[value] then return seen[value] end
+
+  local copy = {}
+  seen[value] = copy
+  for key, child in pairs(value) do
+    copy[MDTMiniRouteDeepCopy(key, seen)] = MDTMiniRouteDeepCopy(child, seen)
+  end
+  return copy
+end
+
+function MDTMiniRouteGetScenarioPercent()
+  if not C_Scenario or type(C_Scenario.GetStepInfo) ~= "function" then return end
+  if not C_ScenarioInfo or type(C_ScenarioInfo.GetCriteriaInfo) ~= "function" then return end
+
+  local ok, stepName, currentStage, criteriaCount = pcall(C_Scenario.GetStepInfo)
+  if not ok or not criteriaCount or criteriaCount <= 0 then return end
+
+  local value
+  for criteriaIdx = 1, criteriaCount do
+    local criteriaOk, info = pcall(C_ScenarioInfo.GetCriteriaInfo, criteriaIdx)
+    local text = criteriaOk and info and info.quantityString
+    local percent = type(text) == "string" and tonumber(text:match("([%d%.]+)%s*%%"))
+    if percent then
+      value = math.max(value or 0, percent)
+    end
+  end
+  return value
+end
+
+function MDTMiniRouteGetTankMapPosition()
+  if not C_Map or type(C_Map.GetBestMapForUnit) ~= "function" or type(C_Map.GetPlayerMapPosition) ~= "function" then return end
+
+  local unit = "player"
+  if UnitGroupRolesAssigned then
+    if UnitExists("player") and UnitGroupRolesAssigned("player") == "TANK" then
+      unit = "player"
+    else
+      local groupSize = GetNumGroupMembers and GetNumGroupMembers() or 0
+      local raid = IsInRaid and IsInRaid()
+      for i = 1, math.min(groupSize, raid and 40 or 4) do
+        local candidate = raid and ("raid"..i) or ("party"..i)
+        if UnitExists(candidate) and UnitIsConnected(candidate) and UnitGroupRolesAssigned(candidate) == "TANK" then
+          unit = candidate
+          break
+        end
+      end
+    end
+  end
+
+  local mapId = C_Map.GetBestMapForUnit(unit) or C_Map.GetBestMapForUnit("player")
+  local position = mapId and C_Map.GetPlayerMapPosition(mapId, unit)
+  if not position then return end
+
+  local x, y = position:GetXY()
+  if not x or not y or (x == 0 and y == 0) then return end
+  return x * MAP_WIDTH, -y * MAP_HEIGHT
+end
+
+function MDTMiniRouteGetMaxForces()
+  local MDT = GetMDT()
+  local mdtDB = GetMDTDB()
+  local dungeonIdx = mdtDB and mdtDB.currentDungeonIdx
+  return MDT and MDT.dungeonTotalCount and dungeonIdx and MDT.dungeonTotalCount[dungeonIdx] and MDT.dungeonTotalCount[dungeonIdx].normal
+end
+
+function MDTMiniRouteCountPullsForces(pulls, pullIdx, currentOnly)
+  local MDT = GetMDT()
+  local mdtDB = GetMDTDB()
+  local dungeonIdx = mdtDB and mdtDB.currentDungeonIdx
+  local enemies = MDT and MDT.dungeonEnemies and dungeonIdx and MDT.dungeonEnemies[dungeonIdx]
+  if type(pulls) ~= "table" or type(enemies) ~= "table" then return 0 end
+
+  local total = 0
+  pullIdx = pullIdx or 1000
+  for idx, pull in pairs(pulls) do
+    if type(idx) == "number" and idx <= pullIdx and (not currentOnly or idx == pullIdx) and type(pull) == "table" then
+      for enemyIdx, clones in pairs(pull) do
+        local numericEnemyIdx = tonumber(enemyIdx)
+        local enemy = numericEnemyIdx and enemies[numericEnemyIdx]
+        if enemy and type(clones) == "table" then
+          for _, cloneIdx in pairs(clones) do
+            if IsCloneIncluded(MDT, numericEnemyIdx, cloneIdx) then
+              total = total + (tonumber(enemy.count) or 0)
+            end
+          end
+        end
+      end
+    end
+  end
+  return total
+end
+
+function MDTMiniRouteSnapshotRoute()
+  local preset = GetCurrentPreset()
+  if not preset or not preset.value then return end
+  return MDTMiniRouteDeepCopy(preset.value)
+end
+
+function MDTMiniRouteRestoreRoute(snapshot)
+  if type(snapshot) ~= "table" then return end
+
+  local MDT = GetMDT()
+  local preset = GetCurrentPreset()
+  if not preset then return end
+
+  preset.value = MDTMiniRouteDeepCopy(snapshot)
+  if MDT and type(MDT.UpdateMap) == "function" then
+    pcall(MDT.UpdateMap, MDT)
+  end
+  RequestRefresh()
+  RefreshIfNeeded(true)
+  if MDTMiniRouteRefreshRecoveryFrame then
+    MDTMiniRouteRefreshRecoveryFrame()
+  end
+end
+
+function MDTMiniRouteEnsureRecoveryState()
+  if type(MDTMiniRouteRecoveryState) ~= "table" then
+    MDTMiniRouteRecoveryState = {}
+  end
+  if type(MDTMiniRouteRecoveryState.undo) ~= "table" then MDTMiniRouteRecoveryState.undo = {} end
+  if type(MDTMiniRouteRecoveryState.redo) ~= "table" then MDTMiniRouteRecoveryState.redo = {} end
+  return MDTMiniRouteRecoveryState
+end
+
+function MDTMiniRouteBeginRecoveryEdit()
+  local state = MDTMiniRouteEnsureRecoveryState()
+  if not state.baseline then
+    state.baseline = MDTMiniRouteSnapshotRoute()
+  end
+  local snapshot = MDTMiniRouteSnapshotRoute()
+  if snapshot then
+    table.insert(state.undo, snapshot)
+    state.redo = {}
+  end
+end
+
+function MDTMiniRouteUndoRecovery()
+  local state = MDTMiniRouteEnsureRecoveryState()
+  local snapshot = table.remove(state.undo)
+  if not snapshot then
+    Print("no recovery edit to undo")
+    return
+  end
+  local current = MDTMiniRouteSnapshotRoute()
+  if current then table.insert(state.redo, current) end
+  MDTMiniRouteRestoreRoute(snapshot)
+end
+
+function MDTMiniRouteRedoRecovery()
+  local state = MDTMiniRouteEnsureRecoveryState()
+  local snapshot = table.remove(state.redo)
+  if not snapshot then
+    Print("no recovery edit to redo")
+    return
+  end
+  local current = MDTMiniRouteSnapshotRoute()
+  if current then table.insert(state.undo, current) end
+  MDTMiniRouteRestoreRoute(snapshot)
+end
+
+function MDTMiniRouteRevertRecovery()
+  local state = MDTMiniRouteEnsureRecoveryState()
+  if not state.baseline then
+    Print("no recovery changes to revert")
+    return
+  end
+  MDTMiniRouteRestoreRoute(state.baseline)
+  state.baseline = nil
+  state.undo = {}
+  state.redo = {}
+  Print("recovery changes reverted")
+end
+
+function MDTMiniRouteSetRecoveryMode(enabled)
+  if not db then return end
+  db.recoveryMode = enabled == true
+  if db.recoveryMode then
+    db.showEnemyDots = true
+    Print("recovery mode on")
+  else
+    Print("recovery mode off")
+  end
+  RequestRefresh()
+  RefreshIfNeeded(true)
+  if MDTMiniRouteRefreshRecoveryFrame then
+    MDTMiniRouteRefreshRecoveryFrame()
+  end
+end
+
+function MDTMiniRouteSetAnchorPull(pullIdx)
+  if not db then return end
+  pullIdx = tonumber(pullIdx)
+  if not pullIdx then return end
+
+  local previousAutoSelect = db.autoSelectPull
+  db.autoSelectPull = false
+  SelectPull(pullIdx)
+  db.autoSelectPull = previousAutoSelect
+  db.autoPullUseProximity = true
+  db.autoPullAnchorActive = true
+  db.autoPullAnchorPull = pullIdx
+  db.autoSelectPull = true
+  Print("auto selector anchored to pull "..pullIdx)
+end
+
+function MDTMiniRoutePullContainsClone(pulls, enemyIdx, cloneIdx)
+  if type(pulls) ~= "table" then return end
+  enemyIdx = tonumber(enemyIdx)
+  for pullIdx, pull in pairs(pulls) do
+    local clones = type(pull) == "table" and pull[enemyIdx]
+    if type(clones) == "table" then
+      for _, currentCloneIdx in pairs(clones) do
+        if currentCloneIdx == cloneIdx then
+          return pullIdx
+        end
+      end
+    end
+  end
+end
+
+function MDTMiniRouteRemoveCloneFromPulls(pulls, enemyIdx, cloneIdx)
+  if type(pulls) ~= "table" then return end
+  enemyIdx = tonumber(enemyIdx)
+  for _, pull in pairs(pulls) do
+    local clones = type(pull) == "table" and pull[enemyIdx]
+    if type(clones) == "table" then
+      for i = #clones, 1, -1 do
+        if clones[i] == cloneIdx then
+          table.remove(clones, i)
+        end
+      end
+    end
+  end
+end
+
+function MDTMiniRouteAddRecoveryClone(enemyIdx, cloneIdx, targetPull)
+  local MDT = GetMDT()
+  local mdtDB = GetMDTDB()
+  local preset = GetCurrentPreset()
+  local pulls = preset and preset.value and preset.value.pulls
+  local enemies = MDT and mdtDB and MDT.dungeonEnemies and MDT.dungeonEnemies[mdtDB.currentDungeonIdx]
+  enemyIdx = tonumber(enemyIdx)
+  if not MDT or not preset or type(pulls) ~= "table" or type(enemies) ~= "table" or not enemyIdx or not cloneIdx then return end
+
+  targetPull = tonumber(targetPull or GetCurrentPull(preset)) or 1
+  pulls[targetPull] = pulls[targetPull] or {}
+  MDTMiniRouteBeginRecoveryEdit()
+
+  local function addOne(addEnemyIdx, addCloneIdx)
+    MDTMiniRouteRemoveCloneFromPulls(pulls, addEnemyIdx, addCloneIdx)
+    pulls[targetPull][addEnemyIdx] = pulls[targetPull][addEnemyIdx] or {}
+    for _, currentCloneIdx in pairs(pulls[targetPull][addEnemyIdx]) do
+      if currentCloneIdx == addCloneIdx then return end
+    end
+    table.insert(pulls[targetPull][addEnemyIdx], addCloneIdx)
+  end
+
+  addOne(enemyIdx, cloneIdx)
+  local clickedClone = enemies[enemyIdx] and enemies[enemyIdx].clones and enemies[enemyIdx].clones[cloneIdx]
+  if clickedClone and clickedClone.g then
+    for otherEnemyIdx, otherEnemy in pairs(enemies) do
+      if type(otherEnemy) == "table" and type(otherEnemy.clones) == "table" then
+        for otherCloneIdx, otherClone in pairs(otherEnemy.clones) do
+          if otherClone and otherClone.g == clickedClone.g then
+            addOne(otherEnemyIdx, otherCloneIdx)
+          end
+        end
+      end
+    end
+  end
+
+  if MDT and type(MDT.SetSelectionToPull) == "function" then
+    pcall(MDT.SetSelectionToPull, MDT, targetPull)
+  else
+    preset.value.currentPull = targetPull
+    preset.value.selection = { targetPull }
+  end
+  RequestRefresh()
+  RefreshIfNeeded(true)
+  if MDTMiniRouteRefreshRecoveryFrame then MDTMiniRouteRefreshRecoveryFrame() end
+end
+
+function MDTMiniRouteRemoveRecoveryClone(enemyIdx, cloneIdx)
+  local preset = GetCurrentPreset()
+  local pulls = preset and preset.value and preset.value.pulls
+  if type(pulls) ~= "table" then return end
+
+  MDTMiniRouteBeginRecoveryEdit()
+  MDTMiniRouteRemoveCloneFromPulls(pulls, enemyIdx, cloneIdx)
+  RequestRefresh()
+  RefreshIfNeeded(true)
+  if MDTMiniRouteRefreshRecoveryFrame then MDTMiniRouteRefreshRecoveryFrame() end
+end
+
+function MDTMiniRouteRecoveryMobVisible(clone)
+  if not db or db.recoveryMode ~= true or not clone then return false end
+  local tankX, tankY = MDTMiniRouteGetTankMapPosition()
+  if not tankX or not tankY then return true end
+
+  local radius = math.max(150, (db.autoPullProximityRadius or DEFAULTS.autoPullProximityRadius) * 2)
+  local dx, dy = clone.x - tankX, clone.y - tankY
+  return ((dx * dx) + (dy * dy)) <= (radius * radius)
+end
+
+function MDTMiniRouteResetHitFrames()
+  if type(MDTMiniRouteHitPool) ~= "table" then return end
+  MDTMiniRouteHitPool.used = 0
+  for _, hit in ipairs(MDTMiniRouteHitPool.frames or {}) do
+    hit:Hide()
+  end
+end
+
+function MDTMiniRouteAcquireHitFrame()
+  if not canvas then return end
+  if type(MDTMiniRouteHitPool) ~= "table" then
+    MDTMiniRouteHitPool = { used = 0, frames = {} }
+  end
+
+  MDTMiniRouteHitPool.used = (MDTMiniRouteHitPool.used or 0) + 1
+  local hit = MDTMiniRouteHitPool.frames[MDTMiniRouteHitPool.used]
+  if not hit then
+    hit = CreateFrame("Button", nil, canvas)
+    hit:SetFrameLevel(canvas:GetFrameLevel() + 20)
+    hit:EnableMouse(true)
+    hit:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    hit.highlight = hit:CreateTexture(nil, "HIGHLIGHT")
+    hit.highlight:SetAllPoints()
+    hit.highlight:SetColorTexture(1, 1, 1, 0.12)
+    hit:SetScript("OnClick", function(self, button)
+      if self.hitPullIdx then
+        if button == "LeftButton" and IsShiftKeyDown() then
+          MDTMiniRouteSetAnchorPull(self.hitPullIdx)
+          return
+        end
+        if button == "LeftButton" then
+          SelectPull(self.hitPullIdx)
+          return
+        end
+      end
+
+      if self.hitEnemyIdx and self.hitCloneIdx and db and db.recoveryMode == true then
+        if button == "LeftButton" and not self.hitPullIdx then
+          MDTMiniRouteAddRecoveryClone(self.hitEnemyIdx, self.hitCloneIdx)
+        elseif button == "RightButton" and self.hitPullIdx then
+          MDTMiniRouteRemoveRecoveryClone(self.hitEnemyIdx, self.hitCloneIdx)
+        end
+      end
+    end)
+    hit:SetScript("OnEnter", function(self)
+      GameTooltip:SetOwner(self, "ANCHOR_CURSOR")
+      if self.hitType == "pull" then
+        GameTooltip:AddLine("Pull "..tostring(self.hitPullIdx), 1, 0.85, 0.1)
+        GameTooltip:AddLine("Left-click: show planned pull", 0.8, 0.8, 0.8)
+        GameTooltip:AddLine("Shift-left-click: anchor auto selector here", 0.55, 0.85, 1)
+      elseif self.hitType == "mob" then
+        GameTooltip:AddLine(self.hitName or "Mob", 1, 1, 1)
+        if self.hitPercent then
+          GameTooltip:AddLine(string.format("%.2f%% forces", self.hitPercent), 0.7, 0.9, 1)
+        end
+        if self.hitPullIdx then
+          GameTooltip:AddLine("Route pull "..tostring(self.hitPullIdx), 1, 0.85, 0.1)
+          GameTooltip:AddLine("Left-click: show pull", 0.8, 0.8, 0.8)
+          GameTooltip:AddLine("Shift-left-click: anchor auto selector", 0.55, 0.85, 1)
+          if db and db.recoveryMode == true then
+            GameTooltip:AddLine("Right-click: remove from route", 1, 0.45, 0.45)
+          end
+        elseif db and db.recoveryMode == true then
+          GameTooltip:AddLine("Left-click: add to current pull", 0.55, 1, 0.65)
+        end
+      end
+      GameTooltip:Show()
+    end)
+    hit:SetScript("OnLeave", function()
+      GameTooltip:Hide()
+    end)
+    MDTMiniRouteHitPool.frames[MDTMiniRouteHitPool.used] = hit
+  end
+
+  hit:ClearAllPoints()
+  hit.hitType = nil
+  hit.hitPullIdx = nil
+  hit.hitEnemyIdx = nil
+  hit.hitCloneIdx = nil
+  hit.hitName = nil
+  hit.hitPercent = nil
+  hit:Show()
+  return hit
+end
+
+function MDTMiniRoutePlacePullHit(pullIdx, vertices, center, scale)
+  if not center or not scale then return end
+  local hit = MDTMiniRouteAcquireHitFrame()
+  if not hit then return end
+
+  local minX, maxX = center.x, center.x
+  local minY, maxY = center.y, center.y
+  for _, vertex in ipairs(vertices or {}) do
+    minX = math.min(minX, vertex[1] or minX)
+    maxX = math.max(maxX, vertex[1] or maxX)
+    minY = math.min(minY, vertex[2] or minY)
+    maxY = math.max(maxY, vertex[2] or maxY)
+  end
+
+  local width = math.max(28, (maxX - minX) * scale + 20)
+  local height = math.max(28, (maxY - minY) * scale + 20)
+  hit:SetSize(width, height)
+  hit:SetPoint("CENTER", canvas, "TOPLEFT", ((minX + maxX) / 2) * scale, ((minY + maxY) / 2) * scale)
+  hit.hitType = "pull"
+  hit.hitPullIdx = pullIdx
+end
+
+function MDTMiniRoutePlaceMobHit(enemyIdx, cloneIdx, enemy, clone, scale, pullInfo)
+  if not enemy or not clone or not clone.x or not clone.y or not scale then return end
+  local hit = MDTMiniRouteAcquireHitFrame()
+  if not hit then return end
+
+  local maxForces = MDTMiniRouteGetMaxForces()
+  local count = tonumber(enemy.count) or 0
+  hit:SetSize(math.max(12, 18 * scale), math.max(12, 18 * scale))
+  hit:SetPoint("CENTER", canvas, "TOPLEFT", clone.x * scale, clone.y * scale)
+  hit.hitType = "mob"
+  hit.hitEnemyIdx = tonumber(enemyIdx)
+  hit.hitCloneIdx = cloneIdx
+  hit.hitPullIdx = pullInfo and pullInfo.pullIdx
+  hit.hitName = enemy.name or enemy.creatureName or ("Mob "..tostring(enemy.id or enemyIdx))
+  hit.hitPercent = maxForces and maxForces > 0 and ((count / maxForces) * 100) or nil
+end
+
+MDTMiniRouteSuggestRecovery = function()
+  if not db then return end
+
+  local MDT = GetMDT()
+  local mdtDB = GetMDTDB()
+  local preset = GetCurrentPreset()
+  local pulls = preset and preset.value and preset.value.pulls
+  local dungeonIdx = mdtDB and mdtDB.currentDungeonIdx
+  local enemies = MDT and MDT.dungeonEnemies and dungeonIdx and MDT.dungeonEnemies[dungeonIdx]
+  local maxForces = MDT and MDT.dungeonTotalCount and dungeonIdx and MDT.dungeonTotalCount[dungeonIdx] and MDT.dungeonTotalCount[dungeonIdx].normal
+  if not MDT or not mdtDB or type(pulls) ~= "table" or type(enemies) ~= "table" or not maxForces or maxForces <= 0 then
+    Print("recovery hint needs an active MDT route with enemy forces data")
+    return
+  end
+
+  local function scenarioPercent()
+    if not C_Scenario or type(C_Scenario.GetStepInfo) ~= "function" then return end
+    if not C_ScenarioInfo or type(C_ScenarioInfo.GetCriteriaInfo) ~= "function" then return end
+
+    local ok, stepName, currentStage, criteriaCount = pcall(C_Scenario.GetStepInfo)
+    if not ok or not criteriaCount or criteriaCount <= 0 then return end
+
+    local value
+    for criteriaIdx = 1, criteriaCount do
+      local criteriaOk, info = pcall(C_ScenarioInfo.GetCriteriaInfo, criteriaIdx)
+      local text = criteriaOk and info and info.quantityString
+      local percent = type(text) == "string" and tonumber(text:match("([%d%.]+)%s*%%"))
+      if percent then
+        value = math.max(value or 0, percent)
+      end
+    end
+    return value
+  end
+
+  local actualPercent = scenarioPercent()
+  if not actualPercent then
+    Print("recovery hint needs active Mythic+ enemy forces progress")
+    return
+  end
+
+  local currentPull = math.floor(Clamp(tonumber(GetCurrentPull(preset)) or 1, 1, #pulls))
+  local startForces = currentPull > 1 and GetPullForces(MDT, mdtDB, preset, currentPull - 1, false) or 0
+  local endForces = GetPullForces(MDT, mdtDB, preset, currentPull, false)
+  local startPercent = (startForces / maxForces) * 100
+  local endPercent = (endForces / maxForces) * 100
+  local threshold = Clamp(db.autoPullDriftThreshold or DEFAULTS.autoPullDriftThreshold, 1, 25)
+  local deficit = startPercent - actualPercent
+  local surplus = actualPercent - endPercent
+
+  if deficit <= threshold and surplus <= threshold then
+    Print(string.format("route progress looks aligned: %.2f%% actual, pull %d expects %.2f-%.2f%%", actualPercent, currentPull, startPercent, endPercent))
+    return
+  end
+
+  local function tankPosition()
+    if not C_Map or type(C_Map.GetBestMapForUnit) ~= "function" or type(C_Map.GetPlayerMapPosition) ~= "function" then return end
+    local unit = "player"
+    if UnitGroupRolesAssigned then
+      local groupSize = GetNumGroupMembers and GetNumGroupMembers() or 0
+      for i = 1, math.min(groupSize, IsInRaid and IsInRaid() and 40 or 4) do
+        local candidate = (IsInRaid and IsInRaid()) and ("raid"..i) or ("party"..i)
+        if UnitExists(candidate) and UnitIsConnected(candidate) and UnitGroupRolesAssigned(candidate) == "TANK" then
+          unit = candidate
+          break
+        end
+      end
+    end
+    local mapId = C_Map.GetBestMapForUnit(unit) or C_Map.GetBestMapForUnit("player")
+    local position = mapId and C_Map.GetPlayerMapPosition(mapId, unit)
+    if not position then return end
+    local x, y = position:GetXY()
+    if not x or not y or (x == 0 and y == 0) then return end
+    return x * MAP_WIDTH, -y * MAP_HEIGHT
+  end
+
+  local tankX, tankY = tankPosition()
+  local sublevel = preset.value.currentSublevel or 1
+
+  if deficit > threshold then
+    local routeClones = {}
+    for _, pull in ipairs(pulls) do
+      if type(pull) == "table" then
+        for enemyIdx, clones in pairs(pull) do
+          if type(clones) == "table" then
+            for _, cloneIdx in pairs(clones) do
+              routeClones[tostring(enemyIdx)..":"..tostring(cloneIdx)] = true
+            end
+          end
+        end
+      end
+    end
+
+    local candidates = {}
+    for enemyIdx, enemy in pairs(enemies) do
+      if type(enemy) == "table" and type(enemy.clones) == "table" and not enemy.isBoss then
+        for cloneIdx, clone in pairs(enemy.clones) do
+          local key = tostring(enemyIdx)..":"..tostring(cloneIdx)
+          if not routeClones[key] and clone and clone.x and clone.y and (clone.sublevel == sublevel or clone.sublevel == nil) then
+            local count = tonumber(enemy.count) or 0
+            if count > 0 then
+              local distance = 99999
+              if tankX and tankY then
+                local dx, dy = clone.x - tankX, clone.y - tankY
+                distance = math.sqrt((dx * dx) + (dy * dy))
+              end
+              local spellPenalty = type(enemy.spells) == "table" and 160 or 0
+              local score = distance + spellPenalty + math.max(0, count - ((deficit / 100) * maxForces)) * 8
+              candidates[#candidates + 1] = {
+                name = enemy.name or enemy.creatureName or ("Mob "..tostring(enemy.id or enemyIdx)),
+                count = count,
+                percent = (count / maxForces) * 100,
+                distance = distance,
+                score = score,
+              }
+            end
+          end
+        end
+      end
+    end
+
+    table.sort(candidates, function(a, b) return a.score < b.score end)
+    Print(string.format("behind by about %.2f%%. Nearby unpulled options:", deficit))
+    for i = 1, math.min(3, #candidates) do
+      local candidate = candidates[i]
+      Print(string.format("%d) %s - %.2f%%, distance %.0f", i, candidate.name, candidate.percent, candidate.distance))
+    end
+    if #candidates == 0 then
+      Print("no nearby unpulled non-boss mobs found in MDT data")
+    end
+    return
+  end
+
+  local candidates = {}
+  for pullIdx = currentPull + 1, #pulls do
+    local pullForces = GetPullForces(MDT, mdtDB, preset, pullIdx, true)
+    if pullForces and pullForces > 0 then
+      candidates[#candidates + 1] = {
+        pullIdx = pullIdx,
+        percent = (pullForces / maxForces) * 100,
+        score = math.abs(((surplus / 100) * maxForces) - pullForces) + (pullIdx - currentPull) * 2,
+      }
+    end
+  end
+  table.sort(candidates, function(a, b) return a.score < b.score end)
+  Print(string.format("ahead by about %.2f%%. Possible future skip candidates:", surplus))
+  for i = 1, math.min(3, #candidates) do
+    local candidate = candidates[i]
+    Print(string.format("%d) pull %d - %.2f%% route value", i, candidate.pullIdx, candidate.percent))
+  end
+  if #candidates == 0 then
+    Print("no future route pulls found to suggest skipping")
+  end
+end
+
+UpdateAutoPullFromProgress = function(force, correctionPullIdx)
+  if not db or not db.autoSelectPull then return end
+
+  if IsInMatchingDungeon() ~= true then return end
+
+  local MDT = GetMDT()
+  local mdtDB = GetMDTDB()
+  local preset = GetCurrentPreset()
+  local pulls = preset and preset.value and preset.value.pulls
+  local enemies = MDT and MDT.dungeonEnemies and mdtDB and MDT.dungeonEnemies[mdtDB.currentDungeonIdx]
+  if not MDT or not mdtDB or type(pulls) ~= "table" or #pulls == 0 or type(enemies) ~= "table" then return end
+  local maxForces = MDT.dungeonTotalCount and MDT.dungeonTotalCount[mdtDB.currentDungeonIdx] and MDT.dungeonTotalCount[mdtDB.currentDungeonIdx].normal
+
+  local function criteriaPercent(info)
+    local text = info and info.quantityString
+    if type(text) ~= "string" then return end
+
+    local value = text:match("([%d%.]+)%s*%%")
+    return value and tonumber(value)
+  end
+
+  local function scenarioProgress()
+    if not C_Scenario or type(C_Scenario.GetStepInfo) ~= "function" then return end
+    if not C_ScenarioInfo or type(C_ScenarioInfo.GetCriteriaInfo) ~= "function" then return end
+
+    local ok, stepName, currentStage, criteriaCount = pcall(C_Scenario.GetStepInfo)
+    if not ok or not criteriaCount or criteriaCount <= 0 then return end
+
+    local enemyForces
+    local defeatedBosses = 0
+    for criteriaIdx = 1, criteriaCount do
+      local criteriaOk, info = pcall(C_ScenarioInfo.GetCriteriaInfo, criteriaIdx)
+      if criteriaOk and type(info) == "table" then
+        local percent = criteriaPercent(info)
+        if percent then
+          enemyForces = math.max(enemyForces or 0, percent)
+        elseif info.completed and (info.criteriaType == 0 or info.criteriaType == 165) then
+          defeatedBosses = defeatedBosses + 1
+        end
+      end
+    end
+
+    return enemyForces, defeatedBosses
+  end
+
+  local function pullProgressCost(pull)
+    if type(pull) ~= "table" then return 0, false end
+
+    local trash = 0
+    local hasBoss = false
+    for enemyIdx, clones in pairs(pull) do
+      local numericEnemyIdx = tonumber(enemyIdx)
+      local enemy = numericEnemyIdx and enemies[numericEnemyIdx]
+      if enemy and type(clones) == "table" and type(enemy.clones) == "table" then
+        local bossIncluded
+        for _, cloneIdx in pairs(clones) do
+          if enemy.clones[cloneIdx] and IsCloneIncluded(MDT, numericEnemyIdx, cloneIdx) then
+            if enemy.isBoss then
+              bossIncluded = true
+            else
+              trash = trash + (tonumber(enemy.count) or 0)
+            end
+          end
+        end
+        hasBoss = hasBoss or bossIncluded == true
+      end
+    end
+
+    return trash, hasBoss
+  end
+
+  local function progressPullIndex(enemyForces, bosses)
+    if not enemyForces then return end
+
+    local trashLeft = enemyForces + (tonumber(db.autoPullTrashOffset) or 0)
+    local bossesLeft = (bosses or 0) + (tonumber(db.autoPullBossOffset) or 0)
+    local epsilon = 0.001
+
+    for idx = 1, #pulls do
+      local pullTrash, hasBoss = pullProgressCost(pulls[idx])
+      local trashCovered = (trashLeft + epsilon) >= pullTrash
+      local bossCovered = not hasBoss or bossesLeft > 0
+      if trashCovered and bossCovered then
+        trashLeft = trashLeft - pullTrash
+        if hasBoss then
+          bossesLeft = bossesLeft - 1
+        end
+      else
+        return idx
+      end
+    end
+
+    return #pulls
+  end
+
+  local function validUnit(unit)
+    return unit and UnitExists(unit) and UnitIsConnected(unit) and not UnitIsDeadOrGhost(unit)
+  end
+
+  local function tankUnit()
+    if UnitGroupRolesAssigned then
+      if validUnit("player") and UnitGroupRolesAssigned("player") == "TANK" then
+        return "player"
+      end
+
+      local groupSize = GetNumGroupMembers and GetNumGroupMembers() or 0
+      if IsInRaid and IsInRaid() then
+        for i = 1, math.min(groupSize, 40) do
+          local unit = "raid"..i
+          if validUnit(unit) and UnitGroupRolesAssigned(unit) == "TANK" then
+            return unit
+          end
+        end
+      else
+        for i = 1, math.min(groupSize, 4) do
+          local unit = "party"..i
+          if validUnit(unit) and UnitGroupRolesAssigned(unit) == "TANK" then
+            return unit
+          end
+        end
+      end
+    end
+
+    return validUnit("player") and "player" or nil
+  end
+
+  local function unitMapPosition(unit)
+    if not C_Map or type(C_Map.GetBestMapForUnit) ~= "function" or type(C_Map.GetPlayerMapPosition) ~= "function" then return end
+
+    local mapId = C_Map.GetBestMapForUnit(unit) or C_Map.GetBestMapForUnit("player")
+    local position = mapId and C_Map.GetPlayerMapPosition(mapId, unit)
+    if not position then return end
+
+    local x, y = position:GetXY()
+    if not x or not y or (x == 0 and y == 0) then return end
+    return x * MAP_WIDTH, -y * MAP_HEIGHT
+  end
+
+  local function pullCenter(pull)
+    if type(pull) ~= "table" then return end
+
+    local wantedSublevel = preset.value.currentSublevel or 1
+    for pass = 1, 2 do
+      local sumX, sumY, count = 0, 0, 0
+      for enemyIdx, clones in pairs(pull) do
+        local numericEnemyIdx = tonumber(enemyIdx)
+        local enemy = numericEnemyIdx and enemies[numericEnemyIdx]
+        if enemy and type(clones) == "table" and type(enemy.clones) == "table" then
+          for _, cloneIdx in pairs(clones) do
+            local clone = enemy.clones[cloneIdx]
+            local sameSublevel = clone and (clone.sublevel == wantedSublevel or clone.sublevel == nil)
+            if clone and clone.x and clone.y and (sameSublevel or pass == 2) and IsCloneIncluded(MDT, numericEnemyIdx, cloneIdx) then
+              sumX = sumX + clone.x
+              sumY = sumY + clone.y
+              count = count + 1
+            end
+          end
+        end
+      end
+      if count > 0 then
+        return sumX / count, sumY / count
+      end
+    end
+  end
+
+  local function proximityPull(anchorPullIdx, lookBehind, lookAhead, closest)
+    if db.autoPullUseProximity ~= true then return end
+
+    local unit = tankUnit()
+    local x, y = unitMapPosition(unit)
+    if not x or not y then return end
+
+    local radius = Clamp(db.autoPullProximityRadius or DEFAULTS.autoPullProximityRadius, 25, 240)
+    local maxDistance = radius * radius
+
+    local firstPull = tonumber(anchorPullIdx) or tonumber(GetCurrentPull(preset)) or 1
+    firstPull = math.floor(Clamp(firstPull, 1, #pulls))
+    local lastPull = math.min(#pulls, firstPull + (lookAhead or 1))
+    firstPull = math.max(1, firstPull - (lookBehind or 0))
+    local bestPull, bestDistance
+
+    for idx = firstPull, lastPull do
+      local centerX, centerY = pullCenter(pulls[idx])
+      if centerX and centerY then
+        local dx, dy = centerX - x, centerY - y
+        local distance = (dx * dx) + (dy * dy)
+        if distance <= maxDistance then
+          if closest then
+            if not bestDistance or distance < bestDistance then
+              bestPull = idx
+              bestDistance = distance
+            end
+          else
+            return idx
+          end
+        end
+      end
+    end
+
+    return bestPull
+  end
+
+  local function routePercent(pullIdx)
+    if not maxForces or maxForces <= 0 then return end
+    if not pullIdx or pullIdx <= 0 then return 0 end
+    return (GetPullForces(MDT, mdtDB, preset, math.min(pullIdx, #pulls), false) / maxForces) * 100
+  end
+
+  local function routeDrifted(actualPercent)
+    if db.autoPullDriftWatcher == false or not actualPercent then return false end
+    local currentPull = math.floor(Clamp(tonumber(GetCurrentPull(preset)) or 1, 1, #pulls))
+    local startPercent = routePercent(currentPull - 1)
+    local endPercent = routePercent(currentPull)
+    if not startPercent or not endPercent then return false end
+
+    local threshold = Clamp(db.autoPullDriftThreshold or DEFAULTS.autoPullDriftThreshold, 1, 25)
+    if actualPercent < startPercent - threshold or actualPercent > endPercent + threshold then
+      return true, currentPull
+    end
+    return false, currentPull
+  end
+
+  local enemyPercent, bosses = scenarioProgress()
+  local enemyForces = enemyPercent
+  if enemyPercent and maxForces and maxForces > 0 then
+    enemyForces = (enemyPercent / 100) * maxForces
+  end
+
+  if correctionPullIdx then
+    if not enemyForces then return end
+
+    local trashBefore = 0
+    local bossesBefore = 0
+    for idx = 1, math.max(0, correctionPullIdx - 1) do
+      local pullTrash, hasBoss = pullProgressCost(pulls[idx])
+      trashBefore = trashBefore + pullTrash
+      if hasBoss then
+        bossesBefore = bossesBefore + 1
+      end
+    end
+    db.autoPullTrashOffset = trashBefore - enemyForces
+    db.autoPullBossOffset = bossesBefore - (bosses or 0)
+    return
+  end
+
+  local expectedPullIdx = progressPullIndex(enemyForces, bosses)
+  local drifted, currentPull = routeDrifted(enemyPercent)
+  local pullIdx
+  if db.autoPullAnchorActive and db.autoPullAnchorPull and db.autoPullAnchorPull > 0 then
+    if enemyPercent and not drifted then
+      db.autoPullAnchorActive = false
+      db.autoPullAnchorPull = 0
+    else
+      local anchorPull = math.floor(Clamp(db.autoPullAnchorPull, 1, #pulls))
+      pullIdx = proximityPull(anchorPull, 0, 1, false) or anchorPull
+      if pullIdx and pullIdx > anchorPull then
+        db.autoPullAnchorPull = pullIdx
+      end
+    end
+  end
+
+  if not pullIdx and drifted then
+    pullIdx = proximityPull(currentPull, 2, 2, true) or expectedPullIdx
+  elseif not pullIdx then
+    pullIdx = proximityPull(expectedPullIdx) or expectedPullIdx
+  end
+
+  if not pullIdx then return end
+
+  if not preset or not preset.value or not preset.value.pulls or not preset.value.pulls[pullIdx] then return end
+  if tonumber(GetCurrentPull(preset)) == pullIdx then return end
+
+  local ok
+  if MDT and type(MDT.SetSelectionToPull) == "function" then
+    ok = pcall(MDT.SetSelectionToPull, MDT, pullIdx)
+  end
+  if not ok then
+    preset.value.currentPull = pullIdx
+    preset.value.selection = { pullIdx }
+  end
+
+  RequestRefresh()
+  RefreshIfNeeded(true)
 end
 
 local function ScrollPullSidebar(delta)
@@ -1384,7 +2333,8 @@ local function BuildPullVisualData(mdtDB, preset, selectedSet, scale)
 end
 
 local function DrawEnemies(mdtDB, preset, selectedSet, scale, clonePullMap)
-  if not db.showEnemies and not db.showEnemyDots then return end
+  local recoveryMode = db and db.recoveryMode == true
+  if not db.showEnemies and not db.showEnemyDots and not recoveryMode then return end
   local MDT = GetMDT()
   local enemies = MDT and MDT.dungeonEnemies and MDT.dungeonEnemies[mdtDB.currentDungeonIdx]
   local sublevel = preset.value.currentSublevel or 1
@@ -1396,14 +2346,17 @@ local function DrawEnemies(mdtDB, preset, selectedSet, scale, clonePullMap)
         if clone and (clone.sublevel == sublevel or clone.sublevel == nil) and clone.x and clone.y then
           local pullInfo = clonePullMap[enemyIdx..":"..cloneIdx]
           local selected = pullInfo and selectedSet[pullInfo.pullIdx] == true
-          if pullInfo or db.showUnpulledEnemies then
+          local showRecoveryMob = recoveryMode and not pullInfo and MDTMiniRouteRecoveryMobVisible(clone)
+          if pullInfo or db.showUnpulledEnemies or showRecoveryMob then
             if db.showEnemies then
               DrawEnemyIcon(enemy, clone, scale, pullInfo, selected)
-            elseif db.showEnemyDots then
+            elseif db.showEnemyDots or showRecoveryMob then
               local r, g, b = 0.75, 0.75, 0.75
               if pullInfo then r, g, b = pullInfo.r, pullInfo.g, pullInfo.b end
-              DrawDot(clone.x, clone.y, scale, r, g, b, pullInfo and 0.72 or 0.34, pullInfo and 5 or 3)
+              if showRecoveryMob then r, g, b = 0.35, 1, 0.95 end
+              DrawDot(clone.x, clone.y, scale, r, g, b, pullInfo and 0.72 or showRecoveryMob and 0.86 or 0.34, pullInfo and 5 or showRecoveryMob and 5 or 3)
             end
+            MDTMiniRoutePlaceMobHit(enemyIdx, cloneIdx, enemy, clone, scale, pullInfo)
           end
         end
       end
@@ -1445,6 +2398,7 @@ local function DrawRoute(mdtDB, preset)
     local center = centers[pullIdx]
     if vertices and center and ShouldDrawPull(pullIdx, selectedSet) then
       DrawPullOutline(vertices, center.r, center.g, center.b, scale, pullIdx == currentPull or selectedSet[pullIdx])
+      MDTMiniRoutePlacePullHit(pullIdx, vertices, center, scale)
     end
   end
 
@@ -1515,6 +2469,9 @@ local function Refresh()
   HideStatus()
   DrawRoute(mdtDB, preset)
   UpdatePullSidebar(mdtDB, preset)
+  if MDTMiniRouteRefreshRecoveryFrame then
+    MDTMiniRouteRefreshRecoveryFrame()
+  end
 end
 
 local function BuildSignature()
@@ -1546,6 +2503,21 @@ local function BuildSignature()
     tostring(db.showPullNumbers),
     tostring(db.showRouteLines),
     tostring(db.showFrameArtwork),
+    tostring(db.autoSelectPull),
+    tostring(db.autoPullUseProximity),
+    tostring(db.autoPullProximityRadius),
+    tostring(db.autoPullDriftWatcher),
+    tostring(db.autoPullDriftThreshold),
+    tostring(db.autoPullAnchorActive),
+    tostring(db.autoPullAnchorPull),
+    tostring(db.recoveryMode),
+    tostring(db.showRecoveryButton),
+    tostring(db.recoveryButtonMouseoverOnly),
+    tostring(db.recoveryButtonBorderStyle),
+    tostring(db.recoveryButtonBorderSize),
+    tostring((db.recoveryButtonBorderColor or {})[1]),
+    tostring((db.recoveryButtonBorderColor or {})[2]),
+    tostring((db.recoveryButtonBorderColor or {})[3]),
     tostring(db.onlyShowInMatchingDungeon),
     tostring(db.showPullSidebar),
     tostring(db.showPullPercent),
@@ -1660,6 +2632,22 @@ local function SetBooleanOption(key, value, silent)
     if SetLocked then
       SetLocked(db.locked, silent)
     end
+  elseif key == "showOnMouseoverOnly" or key == "onlyShowOutOfCombat" then
+    UpdateOverlayVisibility(true)
+  elseif key == "showRecoveryButton" or key == "recoveryButtonMouseoverOnly" then
+    if MDTMiniRouteApplyRecoveryButtonAppearance then
+      MDTMiniRouteApplyRecoveryButtonAppearance()
+    end
+  elseif key == "autoSelectPull" then
+    db.autoPullTrashOffset = 0
+    db.autoPullBossOffset = 0
+    UpdateAutoPullFromProgress(true)
+    RequestRefresh()
+    RefreshIfNeeded(true)
+  elseif key == "autoPullUseProximity" then
+    UpdateAutoPullFromProgress(true)
+    RequestRefresh()
+    RefreshIfNeeded(true)
   elseif key == "onlyShowInMatchingDungeon" then
     if not db.onlyShowInMatchingDungeon then
       SaveDungeonLayout(activeLayoutDungeonIdx)
@@ -1701,6 +2689,15 @@ local function UpdateSettingsControlVisibility()
       unpulledDotsCheck:Hide()
     end
   end
+
+  local proximityCheck = settingsControls.checks.autoPullUseProximity
+  if proximityCheck then
+    if db and db.autoSelectPull then
+      proximityCheck:Show()
+    else
+      proximityCheck:Hide()
+    end
+  end
 end
 
 RefreshSettingsWindow = function()
@@ -1721,6 +2718,9 @@ RefreshSettingsWindow = function()
   if settingsControls.iconAlphaSlider then
     settingsControls.iconAlphaSlider:SetValue(db.iconAlpha or DEFAULTS.iconAlpha)
   end
+  if settingsControls.recoveryBorderSizeSlider then
+    settingsControls.recoveryBorderSizeSlider:SetValue(db.recoveryButtonBorderSize or DEFAULTS.recoveryButtonBorderSize)
+  end
   if settingsControls.sidebarWidthSlider then
     settingsControls.sidebarWidthSlider:SetValue(db.pullSidebarWidth or DEFAULTS.pullSidebarWidth)
   end
@@ -1732,6 +2732,16 @@ RefreshSettingsWindow = function()
   end
   if UpdatePullSidebarHeader then
     UpdatePullSidebarHeader()
+  end
+  if settingsControls.recoveryBorderButton then
+    settingsControls.recoveryBorderButton:SetText("Border: "..MDTMiniRouteRecoveryBorderLabel(db.recoveryButtonBorderStyle))
+  end
+  if settingsControls.recoveryColorButton then
+    local r, g, b = MDTMiniRouteGetRecoveryBorderColor()
+    settingsControls.recoveryColorButton:SetText("Border Color")
+    if settingsControls.recoveryColorSwatch then
+      settingsControls.recoveryColorSwatch:SetColorTexture(r, g, b, 1)
+    end
   end
   UpdateFontSettingControls()
   UpdateSettingsControlVisibility()
@@ -1953,11 +2963,34 @@ SelectPull = function(pullIdx)
     preset.value.currentPull = pullIdx
     preset.value.selection = { pullIdx }
   end
+  if db.autoSelectPull and UpdateAutoPullFromProgress then
+    UpdateAutoPullFromProgress(false, pullIdx)
+  end
 
   db.showAllPulls = false
   RequestRefresh()
   RefreshIfNeeded(true)
   RefreshSettingsWindow()
+end
+
+function MDTMiniRouteShowSettingsTab(tabName)
+  if not settingsControls.pages then return end
+  tabName = tabName or settingsControls.activeTab or "General"
+  settingsControls.activeTab = tabName
+
+  for name, page in pairs(settingsControls.pages) do
+    if name == tabName then
+      page:Show()
+    else
+      page:Hide()
+    end
+  end
+
+  if settingsControls.tabs then
+    for name, tab in pairs(settingsControls.tabs) do
+      tab:SetEnabled(name ~= tabName)
+    end
+  end
 end
 
 local function CreateSettingsWindow()
@@ -1969,14 +3002,17 @@ local function CreateSettingsWindow()
   settingsFrame:SetMovable(true)
   settingsFrame:EnableMouse(true)
   settingsFrame:RegisterForDrag("LeftButton")
-  settingsFrame:SetSize(360, 996)
+  settingsFrame:SetSize(430, 500)
   settingsFrame:SetBackdrop({
-    bgFile = "Interface\\Buttons\\WHITE8X8",
-    edgeFile = "Interface\\Buttons\\WHITE8X8",
-    edgeSize = 1,
+    bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background-Dark",
+    edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+    tile = true,
+    tileSize = 32,
+    edgeSize = 16,
+    insets = { left = 4, right = 4, top = 4, bottom = 4 },
   })
-  settingsFrame:SetBackdropColor(0.025, 0.03, 0.04, 0.94)
-  settingsFrame:SetBackdropBorderColor(0, 0, 0, 0.95)
+  settingsFrame:SetBackdropColor(0.02, 0.025, 0.03, 0.97)
+  settingsFrame:SetBackdropBorderColor(0.85, 0.68, 0.28, 0.95)
   settingsFrame:SetPoint(db.settingsPoint or DEFAULTS.settingsPoint, UIParent, db.settingsRelativePoint or DEFAULTS.settingsRelativePoint, db.settingsX or DEFAULTS.settingsX, db.settingsY or DEFAULTS.settingsY)
   settingsFrame:Hide()
 
@@ -1989,13 +3025,14 @@ local function CreateSettingsWindow()
   end)
 
   local header = settingsFrame:CreateTexture(nil, "BACKGROUND")
-  header:SetPoint("TOPLEFT", settingsFrame, "TOPLEFT", 1, -1)
-  header:SetPoint("TOPRIGHT", settingsFrame, "TOPRIGHT", -1, -1)
-  header:SetHeight(28)
-  header:SetColorTexture(0.035, 0.045, 0.06, 0.96)
+  header:SetPoint("TOPLEFT", settingsFrame, "TOPLEFT", 8, -7)
+  header:SetPoint("TOPRIGHT", settingsFrame, "TOPRIGHT", -8, -7)
+  header:SetHeight(30)
+  header:SetTexture("Interface\\DialogFrame\\UI-DialogBox-Header")
+  header:SetTexCoord(0.22, 0.78, 0, 0.72)
 
   local title = settingsFrame:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-  title:SetPoint("LEFT", settingsFrame, "TOPLEFT", 12, -15)
+  title:SetPoint("TOPLEFT", settingsFrame, "TOPLEFT", 16, -15)
   title:SetText("Mini Route Options")
 
   local close = CreateFrame("Button", nil, settingsFrame, "UIPanelCloseButton")
@@ -2005,69 +3042,119 @@ local function CreateSettingsWindow()
     settingsFrame:Hide()
   end)
 
-  MakeNativeCheck(settingsFrame, "Show mini route overlay", "shown", 14, -42)
-  MakeNativeCheck(settingsFrame, "Lock overlay position", "locked", 14, -66)
-  MakeNativeCheck(settingsFrame, "Only show in matching dungeon", "onlyShowInMatchingDungeon", 14, -90)
-  MakeNativeCheck(settingsFrame, "Show frame and title", "showFrameArtwork", 14, -114)
-  MakeNativeCheck(settingsFrame, "Show pull sidebar", "showPullSidebar", 14, -148)
-  MakeNativeCheck(settingsFrame, "Sidebar on left", "pullSidebarOnLeft", 14, -172)
-  MakeNativeCheck(settingsFrame, "Detach sidebar", "pullSidebarDetached", 14, -196)
-  MakeNativeCheck(settingsFrame, "Lock detached sidebar", "pullSidebarLocked", 34, -220)
-  MakeNativeCheck(settingsFrame, "Show pull percentages", "showPullPercent", 14, -244)
-  MakeNativeCheck(settingsFrame, "Show all pulls", "showAllPulls", 14, -278)
-  MakeNativeCheck(settingsFrame, "Show pull numbers on map", "showPullNumbers", 14, -302)
-  MakeNativeCheck(settingsFrame, "Show MDT-style pull outlines", "showPullOutlines", 14, -326)
-  MakeNativeCheck(settingsFrame, "Show route connection lines", "showRouteLines", 14, -350)
-  MakeNativeCheck(settingsFrame, "Show mob dots on map", "showEnemyDots", 14, -374)
-  MakeNativeCheck(settingsFrame, "Include unpulled mob dots", "showUnpulledEnemies", 34, -398)
+  settingsControls.pages = {}
+  settingsControls.tabs = {}
 
-  settingsControls.widthSlider = MakeNativeSlider(settingsFrame, "Overlay width", MIN_WIDTH, MAX_WIDTH, 1, 22, -444, function(value)
+  local tabNames = { "General", "Map", "Sidebar", "Recovery", "Fonts" }
+  for i, tabName in ipairs(tabNames) do
+    local tab = CreateFrame("Button", nil, settingsFrame, "UIPanelButtonTemplate")
+    tab:SetPoint("TOPLEFT", settingsFrame, "TOPLEFT", 14 + ((i - 1) * 80), -42)
+    tab:SetSize(76, 22)
+    tab:SetText(tabName)
+    tab:SetScript("OnClick", function()
+      MDTMiniRouteShowSettingsTab(tabName)
+    end)
+    settingsControls.tabs[tabName] = tab
+
+    local page = CreateFrame("Frame", nil, settingsFrame)
+    page:SetPoint("TOPLEFT", settingsFrame, "TOPLEFT", 14, -74)
+    page:SetPoint("BOTTOMRIGHT", settingsFrame, "BOTTOMRIGHT", -14, 44)
+    page:Hide()
+    settingsControls.pages[tabName] = page
+  end
+
+  local general = settingsControls.pages.General
+  local map = settingsControls.pages.Map
+  local sidebar = settingsControls.pages.Sidebar
+  local recovery = settingsControls.pages.Recovery
+  local fonts = settingsControls.pages.Fonts
+
+  MakeNativeCheck(general, "Show mini route overlay", "shown", 4, -4)
+  MakeNativeCheck(general, "Lock overlay position", "locked", 4, -30)
+  MakeNativeCheck(general, "Only show on mouseover", "showOnMouseoverOnly", 4, -56)
+  MakeNativeCheck(general, "Only show outside combat", "onlyShowOutOfCombat", 4, -82)
+  MakeNativeCheck(general, "Only show in matching dungeon", "onlyShowInMatchingDungeon", 4, -108)
+  MakeNativeCheck(general, "Auto-select pull from progress", "autoSelectPull", 4, -148)
+  MakeNativeCheck(general, "Use tank proximity for auto-pull", "autoPullUseProximity", 24, -174)
+  MakeNativeButton(general, "Reset Position", 4, -226, 126, function()
+    ResetPosition()
+    RequestRefresh()
+    RefreshIfNeeded(true)
+    RefreshSettingsWindow()
+  end)
+
+  MakeNativeCheck(map, "Show frame and title", "showFrameArtwork", 4, -4)
+  MakeNativeCheck(map, "Show pull numbers on map", "showPullNumbers", 4, -30)
+  MakeNativeCheck(map, "Show MDT-style pull outlines", "showPullOutlines", 4, -56)
+  MakeNativeCheck(map, "Show route connection lines", "showRouteLines", 4, -82)
+  MakeNativeCheck(map, "Show mob dots on map", "showEnemyDots", 4, -108)
+  MakeNativeCheck(map, "Include unpulled mob dots", "showUnpulledEnemies", 24, -134)
+
+  settingsControls.widthSlider = MakeNativeSlider(map, "Overlay width", MIN_WIDTH, MAX_WIDTH, 1, 16, -188, function(value)
     ApplySize(value)
     SavePosition()
     RequestRefresh()
     RefreshIfNeeded(true)
   end)
-
-  settingsControls.sidebarWidthSlider = MakeNativeSlider(settingsFrame, "Sidebar width", SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH, 1, 22, -498, function(value)
-    db.pullSidebarWidth = Clamp(value, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH)
-    ApplySize(db.width)
-    RefreshIfNeeded(true)
-  end)
-
-  settingsControls.sidebarHeightSlider = MakeNativeSlider(settingsFrame, "Sidebar length", SIDEBAR_MIN_HEIGHT, SIDEBAR_MAX_HEIGHT, 1, 22, -552, function(value)
-    db.pullSidebarHeight = Clamp(value, SIDEBAR_MIN_HEIGHT, SIDEBAR_MAX_HEIGHT)
-    ApplySize(db.width)
-    RefreshIfNeeded(true)
-  end)
-
-  settingsControls.sidebarScaleSlider = MakeNativeSlider(settingsFrame, "Sidebar scale", SIDEBAR_MIN_SCALE, SIDEBAR_MAX_SCALE, 0.05, 22, -606, function(value)
-    db.pullSidebarScale = Clamp(value, SIDEBAR_MIN_SCALE, SIDEBAR_MAX_SCALE)
-    ApplySize(db.width)
-    RefreshIfNeeded(true)
-  end)
-
-  settingsControls.alphaSlider = MakeNativeSlider(settingsFrame, "Map alpha", 0.2, 1, 0.05, 22, -660, function(value)
+  settingsControls.alphaSlider = MakeNativeSlider(map, "Map alpha", 0.2, 1, 0.05, 16, -244, function(value)
     db.alpha = Clamp(value, 0.2, 1)
     ApplyMapAlpha()
     SaveActiveDungeonLayout()
   end)
-
-  settingsControls.iconAlphaSlider = MakeNativeSlider(settingsFrame, "Icon alpha", 0.2, 1, 0.05, 22, -714, function(value)
+  settingsControls.iconAlphaSlider = MakeNativeSlider(map, "Icon alpha", 0.2, 1, 0.05, 16, -300, function(value)
     db.iconAlpha = Clamp(value, 0.2, 1)
     SaveActiveDungeonLayout()
     RequestRefresh()
     RefreshIfNeeded(true)
   end)
 
-  MakeFontControls(settingsFrame, "Sidebar font", "sidebar", 14, -766)
-  MakeFontControls(settingsFrame, "Minimap font", "map", 14, -860)
+  MakeNativeCheck(sidebar, "Show pull sidebar", "showPullSidebar", 4, -4)
+  MakeNativeCheck(sidebar, "Sidebar on left", "pullSidebarOnLeft", 4, -30)
+  MakeNativeCheck(sidebar, "Detach sidebar", "pullSidebarDetached", 4, -56)
+  MakeNativeCheck(sidebar, "Lock detached sidebar", "pullSidebarLocked", 24, -82)
+  MakeNativeCheck(sidebar, "Show pull percentages", "showPullPercent", 4, -122)
+  MakeNativeCheck(sidebar, "Show all pulls", "showAllPulls", 4, -148)
 
-  MakeNativeButton(settingsFrame, "Reset Position", 14, -956, 120, function()
-    ResetPosition()
-    RequestRefresh()
+  settingsControls.sidebarWidthSlider = MakeNativeSlider(sidebar, "Sidebar width", SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH, 1, 16, -202, function(value)
+    db.pullSidebarWidth = Clamp(value, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH)
+    ApplySize(db.width)
     RefreshIfNeeded(true)
-    RefreshSettingsWindow()
   end)
+  settingsControls.sidebarHeightSlider = MakeNativeSlider(sidebar, "Sidebar length", SIDEBAR_MIN_HEIGHT, SIDEBAR_MAX_HEIGHT, 1, 16, -258, function(value)
+    db.pullSidebarHeight = Clamp(value, SIDEBAR_MIN_HEIGHT, SIDEBAR_MAX_HEIGHT)
+    ApplySize(db.width)
+    RefreshIfNeeded(true)
+  end)
+  settingsControls.sidebarScaleSlider = MakeNativeSlider(sidebar, "Sidebar scale", SIDEBAR_MIN_SCALE, SIDEBAR_MAX_SCALE, 0.05, 16, -314, function(value)
+    db.pullSidebarScale = Clamp(value, SIDEBAR_MIN_SCALE, SIDEBAR_MAX_SCALE)
+    ApplySize(db.width)
+    RefreshIfNeeded(true)
+  end)
+
+  MakeNativeCheck(recovery, "Show recovery button", "showRecoveryButton", 4, -4)
+  MakeNativeCheck(recovery, "Only show recovery button on mouseover", "recoveryButtonMouseoverOnly", 4, -30)
+  settingsControls.recoveryBorderButton = MakeNativeButton(recovery, "", 4, -72, 150, MDTMiniRouteCycleRecoveryBorderStyle)
+  settingsControls.recoveryColorButton = MakeNativeButton(recovery, "Border Color", 4, -104, 150, MDTMiniRouteOpenRecoveryBorderColorPicker)
+  settingsControls.recoveryColorSwatch = recovery:CreateTexture(nil, "ARTWORK")
+  settingsControls.recoveryColorSwatch:SetPoint("LEFT", settingsControls.recoveryColorButton, "RIGHT", 10, 0)
+  settingsControls.recoveryColorSwatch:SetSize(18, 18)
+  settingsControls.recoveryColorSwatch:SetColorTexture(0.15, 0.85, 1, 1)
+  settingsControls.recoveryBorderSizeSlider = MakeNativeSlider(recovery, "Border size", 0, 10, 1, 16, -158, function(value)
+    db.recoveryButtonBorderSize = Clamp(value, 0, 10)
+    MDTMiniRouteApplyRecoveryButtonAppearance()
+  end)
+  MakeNativeButton(recovery, "Open Recovery Panel", 4, -224, 160, MDTMiniRouteToggleRecoveryFrame)
+  MakeNativeButton(recovery, "Suggest Recovery", 172, -224, 150, function()
+    if MDTMiniRouteSuggestRecovery then MDTMiniRouteSuggestRecovery() end
+  end)
+  MakeNativeButton(recovery, "Undo", 4, -256, 70, MDTMiniRouteUndoRecovery)
+  MakeNativeButton(recovery, "Redo", 82, -256, 70, MDTMiniRouteRedoRecovery)
+  MakeNativeButton(recovery, "Revert", 160, -256, 86, MDTMiniRouteRevertRecovery)
+
+  MakeFontControls(fonts, "Sidebar font", "sidebar", 4, -4)
+  MakeFontControls(fonts, "Minimap font", "map", 4, -112)
+
+  MDTMiniRouteShowSettingsTab(settingsControls.activeTab or "General")
 end
 
 ShowSettingsWindow = function(autoOpened)
@@ -2100,6 +3187,10 @@ ShowContextMenu = function(anchor)
     { text = "Options", notCheckable = true, func = function() ShowSettingsWindow(false) end },
     { text = db.shown and "Hide overlay" or "Show overlay", notCheckable = true, func = ToggleShown },
     { text = db.locked and "Unlock overlay" or "Lock overlay", notCheckable = true, func = function() SetLocked(not db.locked) RefreshSettingsWindow() end },
+    { text = "Only show on mouseover", checked = db.showOnMouseoverOnly, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showOnMouseoverOnly") end },
+    { text = "Only show outside combat", checked = db.onlyShowOutOfCombat, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("onlyShowOutOfCombat") end },
+    { text = "Auto-select pull from progress", checked = db.autoSelectPull, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("autoSelectPull") end },
+    { text = "Use tank proximity for auto-pull", checked = db.autoPullUseProximity, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("autoPullUseProximity") end },
     { text = "Only show in matching dungeon", checked = db.onlyShowInMatchingDungeon, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("onlyShowInMatchingDungeon") end },
     { text = "Show frame and title", checked = db.showFrameArtwork, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showFrameArtwork") end },
     { text = "Show pull sidebar", checked = db.showPullSidebar, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("showPullSidebar") end },
@@ -2116,7 +3207,7 @@ ShowContextMenu = function(anchor)
   }
 
   if db.pullSidebarDetached then
-    table.insert(menu, 10, { text = "Lock detached sidebar", checked = db.pullSidebarLocked, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("pullSidebarLocked") end })
+    table.insert(menu, 14, { text = "Lock detached sidebar", checked = db.pullSidebarLocked, isNotRadio = true, keepShownOnClick = true, func = function() ToggleMenuOption("pullSidebarLocked") end })
   end
 
   if EasyMenu then
@@ -2139,6 +3230,7 @@ local function CreateMDTMonitor()
     monitorElapsed = 0
 
     UpdateOverlayVisibility(false)
+    UpdateAutoPullFromProgress(false)
 
     local MDT = GetMDT()
     local mdtShown = MDT and MDT.main_frame and MDT.main_frame:IsShown() == true
@@ -2256,6 +3348,57 @@ local function HandleSlash(input)
     SetBooleanOption("onlyShowInMatchingDungeon", not db.onlyShowInMatchingDungeon, false)
     RefreshSettingsWindow()
     Print(db.onlyShowInMatchingDungeon and "only showing in matching dungeon" or "showing outside dungeons too")
+  elseif command == "mouseover" or command == "hover" then
+    SetBooleanOption("showOnMouseoverOnly", not db.showOnMouseoverOnly, false)
+    RefreshSettingsWindow()
+    Print(db.showOnMouseoverOnly and "only showing on mouseover" or "mouseover-only disabled")
+  elseif command == "combat" or command == "outofcombat" then
+    SetBooleanOption("onlyShowOutOfCombat", not db.onlyShowOutOfCombat, false)
+    RefreshSettingsWindow()
+    Print(db.onlyShowOutOfCombat and "hidden in combat" or "combat visibility disabled")
+  elseif command == "autopull" or command == "progress" then
+    SetBooleanOption("autoSelectPull", not db.autoSelectPull, false)
+    RefreshSettingsWindow()
+    Print(db.autoSelectPull and "auto-selecting pull from dungeon progress" or "auto pull selection disabled")
+  elseif command == "proximity" or command == "prox" then
+    SetBooleanOption("autoPullUseProximity", not db.autoPullUseProximity, false)
+    RefreshSettingsWindow()
+    Print(db.autoPullUseProximity and "tank proximity auto-pull on" or "tank proximity auto-pull off")
+  elseif command == "proxradius" or command == "proximityradius" then
+    local radius = tonumber(rest)
+    if radius then
+      db.autoPullProximityRadius = Clamp(radius, 25, 240)
+      UpdateAutoPullFromProgress(true)
+      RequestRefresh()
+      RefreshIfNeeded(true)
+      Print("proximity radius "..db.autoPullProximityRadius)
+    else
+      Print("usage: /mdtmini proxradius 85")
+    end
+  elseif command == "drift" or command == "driftwatcher" then
+    local threshold = tonumber(rest)
+    if threshold then
+      db.autoPullDriftThreshold = Clamp(threshold, 1, 25)
+      db.autoPullDriftWatcher = true
+      Print("route drift watcher threshold "..db.autoPullDriftThreshold.."%")
+    else
+      SetBooleanOption("autoPullDriftWatcher", db.autoPullDriftWatcher == false, false)
+      Print(db.autoPullDriftWatcher and "route drift watcher on" or "route drift watcher off")
+    end
+  elseif command == "recovery" or command == "recoverpanel" then
+    MDTMiniRouteToggleRecoveryFrame()
+  elseif command == "recoverymode" then
+    MDTMiniRouteSetRecoveryMode(not (db and db.recoveryMode == true))
+  elseif command == "recover" or command == "suggest" then
+    if MDTMiniRouteSuggestRecovery then
+      MDTMiniRouteSuggestRecovery()
+    end
+  elseif command == "revert" then
+    MDTMiniRouteRevertRecovery()
+  elseif command == "undo" then
+    MDTMiniRouteUndoRecovery()
+  elseif command == "redo" then
+    MDTMiniRouteRedoRecovery()
   elseif command == "sidebar" then
     SetBooleanOption("showPullSidebar", not db.showPullSidebar, false)
     RefreshSettingsWindow()
@@ -2310,8 +3453,324 @@ local function HandleSlash(input)
     ResetPosition()
     RefreshIfNeeded(true)
   else
-    Print("/mdtmini options | toggle | show | hide | lock | unlock | pull <number> | all | outlines | lines | numbers | dots | unpulled | frame | dungeon | sidebar | side | detach | sidebarlock | percent | size <width> | alpha <0.2-1> | iconalpha <0.2-1> | reset")
+    Print("/mdtmini options | toggle | show | hide | lock | unlock | pull <number> | all | outlines | lines | numbers | dots | unpulled | frame | dungeon | mouseover | combat | autopull | proximity | proxradius <25-240> | drift <1-25> | recovery | recoverymode | recover | undo | redo | revert | sidebar | side | detach | sidebarlock | percent | size <width> | alpha <0.2-1> | iconalpha <0.2-1> | reset")
   end
+end
+
+function MDTMiniRouteGetAdjustedRouteText()
+  local preset = GetCurrentPreset()
+  local pulls = preset and preset.value and preset.value.pulls
+  local maxForces = MDTMiniRouteGetMaxForces()
+  if type(pulls) ~= "table" or not maxForces or maxForces <= 0 then
+    return "Route: --"
+  end
+
+  local currentForces = MDTMiniRouteCountPullsForces(pulls, #pulls, false)
+  local currentPercent = (currentForces / maxForces) * 100
+  local state = MDTMiniRouteEnsureRecoveryState()
+  local baselinePercent
+  if state and state.baseline and type(state.baseline.pulls) == "table" then
+    baselinePercent = (MDTMiniRouteCountPullsForces(state.baseline.pulls, #state.baseline.pulls, false) / maxForces) * 100
+  end
+
+  if baselinePercent then
+    return string.format("Route: %.2f%% (%+.2f%%)", currentPercent, currentPercent - baselinePercent)
+  end
+  return string.format("Route: %.2f%%", currentPercent)
+end
+
+function MDTMiniRouteRefreshRecoveryFrame()
+  local recoveryFrame = _G.MDTMiniRouteRecoveryFrame
+  if not recoveryFrame then return end
+
+  if recoveryFrame.modeButton then
+    recoveryFrame.modeButton:SetText((db and db.recoveryMode) and "Recovery: On" or "Recovery: Off")
+  end
+  if recoveryFrame.percentText then
+    recoveryFrame.percentText:SetText(MDTMiniRouteGetAdjustedRouteText())
+  end
+  if recoveryFrame.anchorText then
+    if db and db.autoPullAnchorActive and db.autoPullAnchorPull and db.autoPullAnchorPull > 0 then
+      recoveryFrame.anchorText:SetText("Anchor: Pull "..db.autoPullAnchorPull)
+    else
+      recoveryFrame.anchorText:SetText("Anchor: none")
+    end
+  end
+end
+
+function MDTMiniRouteCreateRecoveryFrame()
+  if _G.MDTMiniRouteRecoveryFrame then return _G.MDTMiniRouteRecoveryFrame end
+
+  local recoveryFrame = CreateFrame("Frame", "MDTMiniRouteRecoveryFrame", UIParent, "BackdropTemplate")
+  recoveryFrame:SetFrameStrata("DIALOG")
+  recoveryFrame:SetClampedToScreen(true)
+  recoveryFrame:SetMovable(true)
+  recoveryFrame:EnableMouse(true)
+  recoveryFrame:RegisterForDrag("LeftButton")
+  recoveryFrame:SetSize(276, 148)
+  recoveryFrame:SetBackdrop({
+    bgFile = "Interface\\Buttons\\WHITE8X8",
+    edgeFile = "Interface\\Buttons\\WHITE8X8",
+    edgeSize = 1,
+  })
+  recoveryFrame:SetBackdropColor(0.025, 0.03, 0.04, 0.94)
+  recoveryFrame:SetBackdropBorderColor(0, 0, 0, 0.95)
+  if frame then
+    recoveryFrame:SetPoint("TOPLEFT", frame, "BOTTOMLEFT", 0, -6)
+  else
+    recoveryFrame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+  end
+  recoveryFrame:SetScript("OnDragStart", function(self) self:StartMoving() end)
+  recoveryFrame:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
+  recoveryFrame:Hide()
+
+  local title = recoveryFrame:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+  title:SetPoint("TOPLEFT", recoveryFrame, "TOPLEFT", 10, -10)
+  title:SetText("Mini Route Recovery")
+
+  local close = CreateFrame("Button", nil, recoveryFrame, "UIPanelCloseButton")
+  close:SetPoint("TOPRIGHT", recoveryFrame, "TOPRIGHT", 2, 2)
+  close:SetScript("OnClick", function() recoveryFrame:Hide() end)
+
+  recoveryFrame.modeButton = CreateFrame("Button", nil, recoveryFrame, "UIPanelButtonTemplate")
+  recoveryFrame.modeButton:SetPoint("TOPLEFT", recoveryFrame, "TOPLEFT", 10, -34)
+  recoveryFrame.modeButton:SetSize(116, 22)
+  recoveryFrame.modeButton:SetScript("OnClick", function()
+    MDTMiniRouteSetRecoveryMode(not (db and db.recoveryMode == true))
+  end)
+
+  local suggest = CreateFrame("Button", nil, recoveryFrame, "UIPanelButtonTemplate")
+  suggest:SetPoint("LEFT", recoveryFrame.modeButton, "RIGHT", 8, 0)
+  suggest:SetSize(110, 22)
+  suggest:SetText("Suggest")
+  suggest:SetScript("OnClick", function()
+    if MDTMiniRouteSuggestRecovery then MDTMiniRouteSuggestRecovery() end
+  end)
+
+  recoveryFrame.percentText = recoveryFrame:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+  recoveryFrame.percentText:SetPoint("TOPLEFT", recoveryFrame, "TOPLEFT", 12, -64)
+  recoveryFrame.percentText:SetWidth(248)
+  recoveryFrame.percentText:SetJustifyH("LEFT")
+
+  recoveryFrame.anchorText = recoveryFrame:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+  recoveryFrame.anchorText:SetPoint("TOPLEFT", recoveryFrame, "TOPLEFT", 12, -84)
+  recoveryFrame.anchorText:SetWidth(248)
+  recoveryFrame.anchorText:SetJustifyH("LEFT")
+
+  local undo = CreateFrame("Button", nil, recoveryFrame)
+  undo:SetPoint("BOTTOMLEFT", recoveryFrame, "BOTTOMLEFT", 12, 10)
+  undo:SetSize(24, 24)
+  undo:SetNormalTexture("Interface\\Buttons\\UI-SpellbookIcon-PrevPage-Up")
+  undo:SetPushedTexture("Interface\\Buttons\\UI-SpellbookIcon-PrevPage-Down")
+  undo:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square")
+  undo:SetScript("OnClick", MDTMiniRouteUndoRecovery)
+
+  local redo = CreateFrame("Button", nil, recoveryFrame)
+  redo:SetPoint("LEFT", undo, "RIGHT", 8, 0)
+  redo:SetSize(24, 24)
+  redo:SetNormalTexture("Interface\\Buttons\\UI-SpellbookIcon-NextPage-Up")
+  redo:SetPushedTexture("Interface\\Buttons\\UI-SpellbookIcon-NextPage-Down")
+  redo:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square")
+  redo:SetScript("OnClick", MDTMiniRouteRedoRecovery)
+
+  local revert = CreateFrame("Button", nil, recoveryFrame, "UIPanelButtonTemplate")
+  revert:SetPoint("LEFT", redo, "RIGHT", 10, 0)
+  revert:SetSize(74, 22)
+  revert:SetText("Revert")
+  revert:SetScript("OnClick", MDTMiniRouteRevertRecovery)
+
+  local clearAnchor = CreateFrame("Button", nil, recoveryFrame, "UIPanelButtonTemplate")
+  clearAnchor:SetPoint("LEFT", revert, "RIGHT", 8, 0)
+  clearAnchor:SetSize(94, 22)
+  clearAnchor:SetText("Clear Anchor")
+  clearAnchor:SetScript("OnClick", function()
+    if db then
+      db.autoPullAnchorActive = false
+      db.autoPullAnchorPull = 0
+      Print("auto selector anchor cleared")
+      MDTMiniRouteRefreshRecoveryFrame()
+    end
+  end)
+
+  _G.MDTMiniRouteRecoveryFrame = recoveryFrame
+  MDTMiniRouteRefreshRecoveryFrame()
+  return recoveryFrame
+end
+
+function MDTMiniRouteToggleRecoveryFrame()
+  local recoveryFrame = MDTMiniRouteCreateRecoveryFrame()
+  MDTMiniRouteRefreshRecoveryFrame()
+  if recoveryFrame:IsShown() then
+    recoveryFrame:Hide()
+  else
+    recoveryFrame:Show()
+  end
+end
+
+function MDTMiniRouteNormalizeRecoveryBorderStyle(style)
+  if style == "NONE" or style == "1PX" or style == "ARTWORK" then
+    return style
+  end
+  return "ARTWORK"
+end
+
+function MDTMiniRouteRecoveryBorderLabel(style)
+  style = MDTMiniRouteNormalizeRecoveryBorderStyle(style)
+  if style == "NONE" then return "No border" end
+  if style == "1PX" then return "1px border" end
+  return "Round border"
+end
+
+function MDTMiniRouteGetRecoveryBorderColor()
+  if not db or type(db.recoveryButtonBorderColor) ~= "table" then
+    return 0.15, 0.85, 1
+  end
+  return db.recoveryButtonBorderColor[1] or 0.15, db.recoveryButtonBorderColor[2] or 0.85, db.recoveryButtonBorderColor[3] or 1
+end
+
+function MDTMiniRouteCycleRecoveryBorderStyle()
+  if not db then return end
+  local style = MDTMiniRouteNormalizeRecoveryBorderStyle(db.recoveryButtonBorderStyle)
+  if style == "ARTWORK" then
+    db.recoveryButtonBorderStyle = "1PX"
+  elseif style == "1PX" then
+    db.recoveryButtonBorderStyle = "NONE"
+  else
+    db.recoveryButtonBorderStyle = "ARTWORK"
+  end
+  MDTMiniRouteApplyRecoveryButtonAppearance()
+  RefreshSettingsWindow()
+end
+
+function MDTMiniRouteOpenRecoveryBorderColorPicker()
+  if not db then return end
+  local r, g, b = MDTMiniRouteGetRecoveryBorderColor()
+  local previous = { r = r, g = g, b = b }
+
+  local function applyColor(color)
+    local nr, ng, nb
+    if type(color) == "table" then
+      nr = color.r or color[1]
+      ng = color.g or color[2]
+      nb = color.b or color[3]
+    else
+      nr, ng, nb = ColorPickerFrame:GetColorRGB()
+    end
+    db.recoveryButtonBorderColor = { nr or previous.r, ng or previous.g, nb or previous.b }
+    MDTMiniRouteApplyRecoveryButtonAppearance()
+    RefreshSettingsWindow()
+  end
+
+  if not ColorPickerFrame then
+    return
+  end
+
+  if ColorPickerFrame.SetupColorPickerAndShow then
+    ColorPickerFrame:SetupColorPickerAndShow({
+      r = r,
+      g = g,
+      b = b,
+      swatchFunc = function() applyColor() end,
+      cancelFunc = function(color) applyColor(color or previous) end,
+    })
+  else
+    ColorPickerFrame.func = function() applyColor() end
+    ColorPickerFrame.cancelFunc = function(color) applyColor(color or previous) end
+    ColorPickerFrame.hasOpacity = false
+    ColorPickerFrame:SetColorRGB(r, g, b)
+    ColorPickerFrame:Hide()
+    ColorPickerFrame:Show()
+  end
+end
+
+function MDTMiniRouteApplyRecoveryButtonAppearance()
+  local button = _G.MDTMiniRouteRecoveryButton
+  if not button or not db then return end
+
+  if db.showRecoveryButton == false then
+    button:Hide()
+    return
+  end
+
+  button:Show()
+  local mouseoverHidden = db.recoveryButtonMouseoverOnly == true and not OverlayIsMouseOver()
+  button:SetAlpha(mouseoverHidden and 0 or 1)
+
+  local style = MDTMiniRouteNormalizeRecoveryBorderStyle(db.recoveryButtonBorderStyle)
+  local r, g, b = MDTMiniRouteGetRecoveryBorderColor()
+  local borderSize = Clamp(db.recoveryButtonBorderSize or DEFAULTS.recoveryButtonBorderSize, 0, 10)
+  local iconSize = 22
+  local buttonSize = math.max(24, iconSize + (borderSize * 2) + 2)
+
+  button:SetSize(buttonSize, buttonSize)
+  if button.icon then
+    button.icon:ClearAllPoints()
+    button.icon:SetPoint("CENTER", button, "CENTER", 0, 0)
+    button.icon:SetSize(iconSize, iconSize)
+  end
+
+  if button.borderRing then
+    button.borderRing:SetShown(style == "ARTWORK" and borderSize > 0)
+    button.borderRing:SetSize(iconSize + borderSize * 2, iconSize + borderSize * 2)
+    button.borderRing:SetVertexColor(r, g, b, 1)
+  end
+
+  if button.innerRing then
+    button.innerRing:SetShown(style == "ARTWORK" and borderSize > 0)
+    button.innerRing:SetSize(math.max(iconSize, iconSize + borderSize), math.max(iconSize, iconSize + borderSize))
+    button.innerRing:SetVertexColor(0, 0, 0, 0.82)
+  end
+
+  if style == "1PX" then
+    button:SetBackdrop({
+      bgFile = "Interface\\Buttons\\WHITE8X8",
+      edgeFile = "Interface\\Buttons\\WHITE8X8",
+      edgeSize = math.max(1, borderSize),
+    })
+    button:SetBackdropColor(0, 0, 0, 0.25)
+    button:SetBackdropBorderColor(r, g, b, 1)
+  else
+    button:SetBackdrop(nil)
+  end
+end
+
+function MDTMiniRouteCreateRecoveryButton()
+  if _G.MDTMiniRouteRecoveryButton or not frame then return end
+
+  local button = CreateFrame("Button", "MDTMiniRouteRecoveryButton", frame, "BackdropTemplate")
+  button:SetFrameLevel(frame:GetFrameLevel() + 30)
+  button:SetSize(24, 24)
+  button:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -5, 5)
+  button:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square")
+  button.borderRing = button:CreateTexture(nil, "BACKGROUND", nil, 1)
+  button.borderRing:SetTexture(CIRCLE_TEXTURE)
+  button.borderRing:SetPoint("CENTER", button, "CENTER", 0, 0)
+  button.innerRing = button:CreateTexture(nil, "BACKGROUND", nil, 2)
+  button.innerRing:SetTexture(CIRCLE_TEXTURE)
+  button.innerRing:SetPoint("CENTER", button, "CENTER", 0, 0)
+  button.icon = button:CreateTexture(nil, "ARTWORK")
+  button.icon:SetTexture("Interface\\Icons\\INV_Misc_Head_Murloc_01")
+  button.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+  button.icon:SetPoint("CENTER", button, "CENTER", 0, 0)
+  button:SetScript("OnClick", MDTMiniRouteToggleRecoveryFrame)
+  button:SetScript("OnEnter", function(self)
+    MDTMiniRouteApplyRecoveryButtonAppearance()
+    GameTooltip:SetOwner(self, "ANCHOR_CURSOR")
+    GameTooltip:AddLine("Mini Route Recovery", 1, 0.85, 0.1)
+    GameTooltip:AddLine("Open recovery tools", 0.8, 0.8, 0.8)
+    GameTooltip:Show()
+  end)
+  button:SetScript("OnLeave", function()
+    GameTooltip:Hide()
+    if C_Timer and C_Timer.After then
+      C_Timer.After(0.05, MDTMiniRouteApplyRecoveryButtonAppearance)
+    else
+      MDTMiniRouteApplyRecoveryButtonAppearance()
+    end
+  end)
+  WatchOverlayMouseover(button)
+  _G.MDTMiniRouteRecoveryButton = button
+  MDTMiniRouteApplyRecoveryButtonAppearance()
 end
 
 local function CreateOverlay()
@@ -2357,6 +3816,7 @@ local function CreateOverlay()
     SavePosition()
     RefreshIfNeeded(true)
   end)
+  WatchOverlayMouseover(header)
 
   headerTexture = header:CreateTexture(nil, "BACKGROUND")
   headerTexture:SetAllPoints()
@@ -2395,6 +3855,7 @@ local function CreateOverlay()
     SavePosition()
     RefreshIfNeeded(true)
   end)
+  WatchOverlayMouseover(frame)
 
   mapViewport = CreateFrame("ScrollFrame", nil, frame)
   mapViewport:EnableMouse(false)
@@ -2435,6 +3896,7 @@ local function CreateOverlay()
   pullSidebar:SetScript("OnMouseWheel", function(_, delta)
     ScrollPullSidebar(delta)
   end)
+  WatchOverlayMouseover(pullSidebar)
 
   pullSidebarShowAllButton = CreateFrame("Button", nil, pullSidebar, "BackdropTemplate")
   pullSidebarShowAllButton:SetBackdrop({
@@ -2468,17 +3930,21 @@ local function CreateOverlay()
   pullSidebarShowAllButton:SetScript("OnMouseWheel", function(_, delta)
     ScrollPullSidebar(delta)
   end)
+  WatchOverlayMouseover(pullSidebarShowAllButton)
 
   pullSidebarScroll = CreateFrame("ScrollFrame", nil, pullSidebar)
   pullSidebarScroll:EnableMouseWheel(true)
   pullSidebarScroll:SetScript("OnMouseWheel", function(_, delta)
     ScrollPullSidebar(delta)
   end)
+  WatchOverlayMouseover(pullSidebarScroll)
 
   pullSidebarContent = CreateFrame("Frame", nil, pullSidebarScroll)
   pullSidebarContent:SetPoint("TOPLEFT", pullSidebarScroll, "TOPLEFT", 0, 0)
   pullSidebarScroll:SetScrollChild(pullSidebarContent)
   LayoutPullSidebar()
+
+  MDTMiniRouteCreateRecoveryButton()
 
   canvas = CreateFrame("Frame", nil, mapViewport)
   mapViewport:SetScrollChild(canvas)
@@ -2508,6 +3974,7 @@ local function CreateOverlay()
     if elapsedSinceRefresh >= REFRESH_INTERVAL then
       elapsedSinceRefresh = 0
       RefreshIfNeeded(false)
+      ApplyOverlayVisualAlpha()
     end
   end)
 
@@ -2525,6 +3992,25 @@ local function Initialize()
   db.alpha = Clamp(db.alpha, 0.2, 1)
   db.iconAlpha = Clamp(db.iconAlpha, 0.2, 1)
   db.showFrameArtwork = db.showFrameArtwork ~= false
+  db.showOnMouseoverOnly = db.showOnMouseoverOnly == true
+  db.onlyShowOutOfCombat = db.onlyShowOutOfCombat == true
+  db.autoSelectPull = db.autoSelectPull == true
+  db.autoPullUseProximity = db.autoPullUseProximity == true
+  db.autoPullProximityRadius = Clamp(db.autoPullProximityRadius or DEFAULTS.autoPullProximityRadius, 25, 240)
+  db.autoPullDriftWatcher = db.autoPullDriftWatcher ~= false
+  db.autoPullDriftThreshold = Clamp(db.autoPullDriftThreshold or DEFAULTS.autoPullDriftThreshold, 1, 25)
+  db.autoPullAnchorActive = db.autoPullAnchorActive == true
+  db.autoPullAnchorPull = tonumber(db.autoPullAnchorPull) or 0
+  db.autoPullTrashOffset = tonumber(db.autoPullTrashOffset) or 0
+  db.autoPullBossOffset = tonumber(db.autoPullBossOffset) or 0
+  db.recoveryMode = db.recoveryMode == true
+  db.showRecoveryButton = db.showRecoveryButton ~= false
+  db.recoveryButtonMouseoverOnly = db.recoveryButtonMouseoverOnly == true
+  db.recoveryButtonBorderStyle = MDTMiniRouteNormalizeRecoveryBorderStyle(db.recoveryButtonBorderStyle)
+  db.recoveryButtonBorderSize = Clamp(db.recoveryButtonBorderSize or DEFAULTS.recoveryButtonBorderSize, 0, 10)
+  if type(db.recoveryButtonBorderColor) ~= "table" then
+    db.recoveryButtonBorderColor = CopyDefaults(DEFAULTS.recoveryButtonBorderColor, {})
+  end
   db.onlyShowInMatchingDungeon = db.onlyShowInMatchingDungeon == true
   db.showPullSidebar = db.showPullSidebar ~= false
   db.showPullPercent = db.showPullPercent ~= false
@@ -2569,6 +4055,15 @@ end
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("ADDON_LOADED")
 eventFrame:RegisterEvent("PLAYER_LOGIN")
+eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+eventFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+eventFrame:RegisterEvent("WORLD_STATE_TIMER_START")
+eventFrame:RegisterEvent("CHALLENGE_MODE_START")
+eventFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
+eventFrame:RegisterEvent("SCENARIO_CRITERIA_UPDATE")
+eventFrame:RegisterEvent("SCENARIO_COMPLETED")
+eventFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
+eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
 eventFrame:SetScript("OnEvent", function(self, event, arg1)
   if event == "ADDON_LOADED" and arg1 == ADDON_NAME then
     Initialize()
@@ -2578,5 +4073,28 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
     RequestRefresh()
     RefreshIfNeeded(true)
     self:UnregisterEvent("PLAYER_LOGIN")
+  elseif event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_REGEN_ENABLED" then
+    if initialized then
+      UpdateOverlayVisibility(true)
+    end
+  elseif event == "PLAYER_ENTERING_WORLD"
+      or event == "ZONE_CHANGED_NEW_AREA"
+      or event == "WORLD_STATE_TIMER_START"
+      or event == "CHALLENGE_MODE_START"
+      or event == "GROUP_ROSTER_UPDATE"
+      or event == "SCENARIO_CRITERIA_UPDATE"
+      or event == "SCENARIO_COMPLETED" then
+    if initialized then
+      if event == "PLAYER_ENTERING_WORLD"
+          or event == "ZONE_CHANGED_NEW_AREA"
+          or event == "CHALLENGE_MODE_START"
+          or event == "SCENARIO_COMPLETED" then
+        db.autoPullTrashOffset = 0
+        db.autoPullBossOffset = 0
+      end
+      UpdateAutoPullFromProgress(true)
+      RequestRefresh()
+      RefreshIfNeeded(true)
+    end
   end
 end)

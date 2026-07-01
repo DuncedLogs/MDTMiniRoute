@@ -1,14 +1,14 @@
 ## Interface: 120007, 120001, 50504
 # WOW_INTERFACE_TARGETS: mainline-beta, mainline-test, mainline, mists
-## Title: Mythic Dungeon Tools: Mini Route
+## Title: MDTMiniRoute
 ## Author: Dunced/Codex
-## Version: 0.2.14
-## Notes: Movable mini-map overlay, configurable clickable pull sidebar, map mob dots, detached sidebar lock, improved font controls, dungeon-only layouts, and floating options for the current Mythic Dungeon Tools route.
+## Version: 0.2.23
+## Notes: Mini MDT route overlay with tabbed options, clickable map pulls, recovery editing, custom branding, and drift/proximity tracking.
 ## Dependencies: MythicDungeonTools
 ## RequiredDeps: MythicDungeonTools
 ## OptionalDeps: ElvUI, LibSharedMedia-3.0, SharedMedia
 ## SavedVariables: MDTMiniRouteDB
-## IconTexture: Interface\AddOns\MythicDungeonTools\Textures\MDTMinimap
+## IconTexture: Interface\AddOns\MDTMiniRoute\Textures\MDTMiniRouteIcon
 ## X-Category: MythicDungeonTools Plugin
 
 MDTMiniRoute.lua
